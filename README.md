@@ -1,3 +1,11 @@
+<p align="center">
+  <img src="https://img.shields.io/github/v/release/loujessler/macgenuity">
+  <img src="https://img.shields.io/github/license/loujessler/macgenuity">
+  <img src="https://img.shields.io/github/stars/loujessler/macgenuity">
+</p>
+
+---
+
 # MacGenuity
 
 A lightweight macOS menu bar application for monitoring HyperX wireless devices (mouse and USB microphone).

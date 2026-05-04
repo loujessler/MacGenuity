@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Support MacGenuity</title>
+
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #171a21;
+      --text: #e6e6e6;
+      --secondary: #9aa0a6;
+      --accent: #4da3ff;
+      --border: #2a2f3a;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      max-width: 520px;
+      width: 100%;
+      padding: 32px 20px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: var(--secondary);
+      font-size: 13px;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .title {
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .address {
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    button {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .footer {
+      margin-top: 20px;
+      font-size: 12px;
+      color: var(--secondary);
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>Support MacGenuity</h1>
+    <div class="subtitle">
+      Open-source HyperX control for macOS
+    </div>
+
+    <div id="donations"></div>
+
+    <div class="footer">
+      <a href="https://github.com/loujessler/MacGenuity">View on GitHub</a>
+    </div>
+  </div>
+
+  <script>
+    function short(addr) {
+      return addr.slice(0, 6) + "..." + addr.slice(-4);
+    }
+
+    function createRow(title, address, scheme) {
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const t = document.createElement("div");
+      t.className = "title";
+      t.innerText = title;
+
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const addr = document.createElement("div");
+      addr.className = "address";
+      addr.innerText = short(address);
+
+      const copy = document.createElement("button");
+      copy.innerText = "Copy";
+      copy.onclick = () => {
+        navigator.clipboard.writeText(address);
+        copy.innerText = "✓";
+        setTimeout(() => (copy.innerText = "Copy"), 1000);
+      };
+
+      row.appendChild(addr);
+
+      if (scheme) {
+        const open = document.createElement("button");
+        open.innerText = "Open";
+        open.onclick = () => {
+          window.location.href = scheme + ":" + address;
+        };
+        row.appendChild(open);
+      }
+
+      row.appendChild(copy);
+
+      card.appendChild(t);
+      card.appendChild(row);
+
+      return card;
+    }
+
+    fetch("https://raw.githubusercontent.com/loujessler/MacGenuity/main/MacGenuity/Resources/donations.json")
+      .then(res => res.json())
+      .then(data => {
+        const root = document.getElementById("donations");
+
+        root.appendChild(
+          createRow("USDT (Polygon)", data.usdt_polygon, "ethereum")
+        );
+
+        root.appendChild(
+          createRow("USDT (TRON)", data.usdt_trc20, "tron")
+        );
+
+        root.appendChild(
+          createRow("Bitcoin", data.btc, "bitcoin")
+        );
+
+        if (data.donation_page) {
+          const link = document.createElement("div");
+          link.className = "footer";
+          link.innerHTML = `<a href="${data.donation_page}">More options</a>`;
+          root.appendChild(link);
+        }
+      });
+  </script>
+</body>
+</html>

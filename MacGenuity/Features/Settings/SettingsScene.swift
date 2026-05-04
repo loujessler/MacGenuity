@@ -730,6 +730,8 @@ private struct DevicePickerRow: View {
 // MARK: - About
 
 private struct AboutPane: View {
+    private let config = DonationService.shared.config
+
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "computermouse")
@@ -747,9 +749,37 @@ private struct AboutPane: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Link("View on GitHub", destination: URL(string: "https://github.com/yourrepo")!)
+            Link("View on GitHub", destination: URL(string: "https://github.com/loujessler/MacGenuity")!)
                 .font(.system(size: 12))
                 .foregroundStyle(.blue)
+
+            // --- SUPPORT BLOCK ---
+            VStack(alignment: .leading, spacing: 10) {
+                Divider()
+                Text("Support development")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                DonationRow(
+                    title: "USDT Polygon (PoS)",
+                    value: config.usdt_polygon,
+                    scheme: "ethereum"
+                )
+                DonationRow(
+                    title: "USDT TRON (TRC20)",
+                    value: config.usdt_trc20,
+                    scheme: "tron"
+                )
+                DonationRow(
+                    title: "Bitcoin",
+                    value: config.btc,
+                    scheme: "bitcoin"
+                )
+                // External page
+//                 Link("All methods (cards, etc.)",
+//                      destination: URL(string: "https://your-donation-page")!)
+//                     .font(.system(size: 12))
+            }
+            // ----------------------
             Spacer()
             Text("MIT License")
                 .font(.system(size: 10))
@@ -757,5 +787,62 @@ private struct AboutPane: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct DonationRow: View {
+    let title: String
+    let value: String
+    let scheme: String?
+
+    @State private var copied = false
+
+    var shortValue: String {
+        let prefix = value.prefix(6)
+        let suffix = value.suffix(4)
+        return "\(prefix)...\(suffix)"
+    }
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+
+                Text(shortValue)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            // Open in wallet
+            if let scheme {
+                Button {
+                    if let url = URL(string: "\(scheme):\(value)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.plain)
+                .help("Open in wallet")
+            }
+
+            // Copy button
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(value, forType: .string)
+
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    copied = false
+                }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.plain)
+            .help("Copy address")
+        }
     }
 }

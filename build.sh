@@ -31,6 +31,9 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 # Copy Info.plist.
 cp "${SRC_DIR}/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 
+# Copy resource files
+cp "${SRC_DIR}/Resources/donations.json" "${APP_BUNDLE}/Contents/Resources/donations.json"
+
 # Generate the app icon.
 echo "Generating app icon..."
 swift "${ROOT}/tools/GenerateAppIcon.swift" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
