@@ -803,6 +803,36 @@ private struct DonationRow: View {
         return "\(prefix)...\(suffix)"
     }
 
+    private func open() {
+        if let scheme,
+           let url = URL(string: "\(scheme):\(value)"),
+           NSWorkspace.shared.urlForApplication(toOpen: url) != nil {
+
+            NSWorkspace.shared.open(url)
+            return
+        }
+
+        openExplorer()
+    }
+
+    private func openExplorer() {
+        let urlString: String
+
+        if value.starts(with: "bc1") {
+            urlString = "https://www.blockchain.com/btc/address/\(value)"
+        } else if value.starts(with: "T") {
+            urlString = "https://tronscan.org/#/address/\(value)"
+        } else if value.starts(with: "0x") {
+            urlString = "https://polygonscan.com/address/\(value)"
+        } else {
+            return
+        }
+
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -816,12 +846,10 @@ private struct DonationRow: View {
 
             Spacer()
 
-            // Open in wallet
+            // Open in wallet or fallback to explorer
             if let scheme {
                 Button {
-                    if let url = URL(string: "\(scheme):\(value)") {
-                        NSWorkspace.shared.open(url)
-                    }
+                    open()
                 } label: {
                     Image(systemName: "arrow.up.right.square")
                 }

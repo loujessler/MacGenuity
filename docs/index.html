@@ -117,6 +117,42 @@
       return addr.slice(0, 6) + "..." + addr.slice(-4);
     }
 
+    function openWalletOrExplorer(address, scheme) {
+      if (scheme) {
+        const url = scheme + ":" + address;
+
+        // пробуем открыть wallet
+        const iframe = document.createElement("iframe");
+        iframe.style.display = "none";
+        iframe.src = url;
+        document.body.appendChild(iframe);
+
+        // fallback через timeout
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+          openExplorer(address);
+        }, 800);
+      } else {
+        openExplorer(address);
+      }
+    }
+
+    function openExplorer(address) {
+      let url = null;
+
+      if (address.startsWith("bc1")) {
+        url = "https://www.blockchain.com/btc/address/" + address;
+      } else if (address.startsWith("T")) {
+        url = "https://tronscan.org/#/address/" + address;
+      } else if (address.startsWith("0x")) {
+        url = "https://polygonscan.com/address/" + address;
+      }
+
+      if (url) {
+        window.open(url, "_blank");
+      }
+    }
+
     function createRow(title, address, scheme) {
       const card = document.createElement("div");
       card.className = "card";
@@ -146,7 +182,7 @@
         const open = document.createElement("button");
         open.innerText = "Open";
         open.onclick = () => {
-          window.location.href = scheme + ":" + address;
+          openWalletOrExplorer(address, scheme);
         };
         row.appendChild(open);
       }
