@@ -2,6 +2,9 @@
     <img src="https://img.shields.io/github/v/release/loujessler/macgenuity">
     <img src="https://img.shields.io/github/license/loujessler/macgenuity">
     <img src="https://img.shields.io/github/stars/loujessler/macgenuity">
+    <a href="https://loujessler.github.io/MacGenuity/">
+      <img src="https://img.shields.io/badge/Donate-Support-blue">
+    </a>
 </p>
 
 ---
