@@ -1,7 +1,8 @@
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/loujessler/macgenuity">
-  <img src="https://img.shields.io/github/license/loujessler/macgenuity">
-  <img src="https://img.shields.io/github/stars/loujessler/macgenuity">
+    <img src="https://img.shields.io/github/v/release/loujessler/macgenuity">
+    <img src="https://img.shields.io/github/license/loujessler/macgenuity">
+    <img src="https://img.shields.io/github/stars/loujessler/macgenuity">
+    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/loujessler/MacGenuity/main/MacGenuity/Resources/donations.json">
 </p>
 
 ---
@@ -235,6 +236,26 @@ Some functionality is intentionally restricted to avoid unsafe device operations
 - Auto-update check against GitHub releases (read-only)
 - Localization (UI is currently English-only)
 - More device profiles — please contribute! See [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md)
+
+---
+
+## ❤️ Support
+
+MacGenuity is an independent open-source project built without third-party dependencies.
+
+If it replaces proprietary software in your setup or saves you time, consider supporting development:
+
+<p align="center">
+  <a href="https://loujessler.github.io/MacGenuity/">
+    <img src="https://img.shields.io/badge/Support-Donate-blue?style=for-the-badge">
+  </a>
+</p>
+
+<p align="center">
+  <sub>
+    Supports cards and crypto · helps expand device compatibility and maintain the project
+  </sub>
+</p>
 
 ---
 
