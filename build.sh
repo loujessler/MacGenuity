@@ -14,14 +14,31 @@ SRC_DIR="${ROOT}/${APP_NAME}"
 BUILD_DIR="${ROOT}/build"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 
-# Auto-detect target architecture so the same script builds on Apple
-# Silicon and Intel without manual edits.
+# Architecture selection.
+#   • HYPERX_UNIVERSAL=1   → build a fat (universal) binary covering both
+#                            Apple Silicon and Intel. Required for a release
+#                            zip that runs on both architectures.
+#   • Otherwise             → auto-detect via `uname -m` (single-arch, faster
+#                            for iteration). Same as before.
 ARCH="$(uname -m)"
 case "${ARCH}" in
     arm64) TARGET="arm64-apple-macos13" ;;
     x86_64) TARGET="x86_64-apple-macos13" ;;
     *) echo "Unsupported architecture: ${ARCH}" ; exit 1 ;;
 esac
+UNIVERSAL="${HYPERX_UNIVERSAL:-0}"
+
+# Centralised cleanup — every temp file/dir gets appended here so we
+# don't fight over a single `trap EXIT` across the script.
+CLEANUP_PATHS=()
+cleanup() {
+    if [[ ${#CLEANUP_PATHS[@]} -gt 0 ]]; then
+        for p in "${CLEANUP_PATHS[@]}"; do
+            [[ -e "${p}" ]] && rm -rf "${p}"
+        done
+    fi
+}
+trap cleanup EXIT
 
 # Clean and prepare the bundle skeleton.
 rm -rf "${BUILD_DIR}"
@@ -102,17 +119,47 @@ if [[ "${#SOURCES[@]}" -eq 0 ]]; then
     exit 1
 fi
 
-echo "Compiling ${#SOURCES[@]} Swift files for ${TARGET}..."
-swiftc \
-    -target "${TARGET}" \
-    -framework IOKit \
-    -framework CoreAudio \
-    -framework ServiceManagement \
-    -framework SwiftUI \
-    -framework AppKit \
-    -O \
-    -o "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}" \
-    "${SOURCES[@]}"
+FINAL_BINARY="${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
+SWIFTC_COMMON_FLAGS=(
+    -framework IOKit
+    -framework CoreAudio
+    -framework ServiceManagement
+    -framework SwiftUI
+    -framework AppKit
+    -O
+)
+
+if [[ "${UNIVERSAL}" == "1" ]]; then
+    # Universal (fat) build: arm64 + x86_64. swiftc itself can't emit a
+    # multi-arch binary in one invocation, so we build each slice into
+    # a temp file and merge with `lipo`. This is the only path that
+    # produces a release artifact runnable on both Apple Silicon and
+    # Intel Macs from a single download.
+    echo "Compiling ${#SOURCES[@]} Swift files for universal (arm64 + x86_64)..."
+    TMP_BIN_DIR="$(mktemp -d)"
+    CLEANUP_PATHS+=("${TMP_BIN_DIR}")
+    SLICE_PATHS=()
+    for slice_arch in arm64 x86_64; do
+        slice_out="${TMP_BIN_DIR}/${APP_NAME}-${slice_arch}"
+        echo "  → ${slice_arch}-apple-macos13"
+        swiftc \
+            -target "${slice_arch}-apple-macos13" \
+            "${SWIFTC_COMMON_FLAGS[@]}" \
+            -o "${slice_out}" \
+            "${SOURCES[@]}"
+        SLICE_PATHS+=("${slice_out}")
+    done
+    echo "Lipo-merging slices into universal binary..."
+    lipo -create "${SLICE_PATHS[@]}" -output "${FINAL_BINARY}"
+    lipo -info "${FINAL_BINARY}"
+else
+    echo "Compiling ${#SOURCES[@]} Swift files for ${TARGET}..."
+    swiftc \
+        -target "${TARGET}" \
+        "${SWIFTC_COMMON_FLAGS[@]}" \
+        -o "${FINAL_BINARY}" \
+        "${SOURCES[@]}"
+fi
 
 # Pick a code-signing identity. macOS TCC binds Input Monitoring
 # permission to the cdhash of the signing identity — ad-hoc signing
@@ -180,8 +227,7 @@ if [[ "${ATTACH_DEBUG_ENTITLEMENT}" == "1" ]]; then
 </dict>
 </plist>
 EOF
-    # Clean up the temp file on any exit path.
-    trap 'rm -f "${ENT_FILE}"' EXIT
+    CLEANUP_PATHS+=("${ENT_FILE}")
 fi
 
 if [[ -n "${SIGN_IDENTITY}" ]]; then

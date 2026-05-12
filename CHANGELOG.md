@@ -4,6 +4,25 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-05-12
+
+A maintenance release that adds universal-binary packaging and documents
+Gatekeeper / icon-cache pitfalls users hit on the 0.2.0 GitHub zip.
+
+### Added
+- **Universal (fat) binary build.** `HYPERX_UNIVERSAL=1 ./build.sh` compiles the project for `arm64` and `x86_64` separately and merges the slices via `lipo`. Required for a single release zip that runs on both Apple Silicon and Intel Macs.
+- **Centralised `trap EXIT` cleanup** in `build.sh`. The previous code had two competing `trap EXIT` handlers that silently overrode each other; tempfiles from one would leak whenever the other path ran.
+
+### Documentation
+- New **"Distributing to other Macs (quarantine + notarization)"** section in README. Walks both users (`xattr -dr com.apple.quarantine ...`) and releasers (full Developer ID + `notarytool` + `stapler` pipeline) through the "the app is damaged" Gatekeeper dialog.
+- New **Troubleshooting** section covering stale Launch Services / Icon Services caches after a bundle-identifier change. Documents the `lsregister -f` + `iconservices.store` reset + `killall Dock/Finder/SystemUIServer` recipe.
+- README "Build" / "Distribution build" sections rewritten to call out universal-binary packaging and note that Apple Development certs cannot distribute apps to other Macs — only Developer ID certs (Apple Developer Program membership required) can.
+
+### Known Issues
+- Public 0.2.x GitHub builds are NOT notarized. Users see the "damaged app" dialog and have to run `xattr -dr com.apple.quarantine /Applications/MacGenuity.app` once after install. Fixed permanently when a notarized build with a Developer ID cert is published.
+
+---
+
 ## [0.2.0] — 2026-05-12
 
 A large feature release: per-device settings sidebar, button remapping, microphone controls with push-based state sync, and the QuadCast / SoloCast / DuoCast family is now recognised.

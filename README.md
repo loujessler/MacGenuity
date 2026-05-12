@@ -202,26 +202,38 @@ open build/MacGenuity.app
 
 The build script:
 
-- Auto-detects Apple Silicon vs. Intel (`arm64-apple-macos13` / `x86_64-apple-macos13`).
+- Auto-detects Apple Silicon vs. Intel for a single-arch dev build (`arm64-apple-macos13` / `x86_64-apple-macos13`).
+- Optional **universal (fat) build** for release: `HYPERX_UNIVERSAL=1 ./build.sh` runs `swiftc` twice (once per arch) and merges the slices with `lipo`. The resulting `.app` runs on both Apple Silicon and Intel.
 - Picks a signing identity in priority order: `HYPERX_SIGN_IDENTITY` env → `"MacGenuity Dev"` self-signed → first `"Apple Development:"` cert → ad-hoc fallback.
 - Adds the `com.apple.security.get-task-allow` entitlement for **development** certs so `lldb` can attach; strips it for Developer ID certs to keep the build notarization-eligible.
 - Optionally bundles a custom menu-bar icon (`Resources/MenuBarIcon.pdf|png`) and app icon (`Resources/AppIcon.icns` or `AppIcon.png`, auto-compiled through `sips`+`iconutil`).
 
 Writes the result to `build/MacGenuity.app`.
 
-### Distribution build
+### Distribution build (release zip for GitHub)
 
-For a notarization-ready Developer ID build:
+A real distribution build needs **Apple Developer Program membership** (a paid account) plus a *Developer ID Application* certificate — Apple Development certs cannot distribute apps to other Macs. Without notarization downloaded copies will trigger macOS Gatekeeper's "the app is damaged" dialog (see [Distributing to other Macs](#distributing-to-other-macs-quarantine--notarization) below).
 
 ```bash
+# 1. Universal Developer ID-signed build, no debug entitlement
+HYPERX_UNIVERSAL=1 \
 HYPERX_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 HYPERX_ALLOW_DEBUG=0 \
 ./build.sh
 
-# Wrap and submit
-cd build && ditto -c -k --keepParent MacGenuity.app MacGenuity.zip
-xcrun notarytool submit MacGenuity.zip --keychain-profile AC_PROFILE --wait
+# 2. Wrap with `ditto` (preserves macOS metadata + signature)
+cd build && ditto -c -k --keepParent MacGenuity.app MacGenuity-0.2.1.zip
+
+# 3. Notarize (requires app-specific Apple ID password set up once
+#    via `xcrun notarytool store-credentials AC_PROFILE`)
+xcrun notarytool submit MacGenuity-0.2.1.zip --keychain-profile AC_PROFILE --wait
+
+# 4. Staple the notarization ticket onto the .app so Gatekeeper can
+#    verify it offline
 xcrun stapler staple MacGenuity.app
+
+# 5. Re-zip the stapled .app for GitHub release upload
+ditto -c -k --keepParent MacGenuity.app MacGenuity-0.2.1-notarized.zip
 ```
 
 To install:
@@ -237,6 +249,66 @@ cp -R build/MacGenuity.app /Applications/
 - macOS 13 (Ventura) or later
 - Apple Silicon or Intel
 - Input Monitoring permission (granted from inside the app or from System Settings → Privacy & Security → Input Monitoring)
+
+---
+
+## Distributing to other Macs (quarantine + notarization)
+
+When macOS Gatekeeper says
+
+> «Приложение «MacGenuity.app» повреждено, и его не удаётся открыть»  
+> "MacGenuity.app is damaged and can't be opened. Move it to the Trash."
+
+the binary is **not** damaged. macOS attached the `com.apple.quarantine` extended attribute when the browser downloaded the zip, and the running Gatekeeper refuses to launch quarantined apps that are not notarized by Apple.
+
+### For users — quick workaround
+
+If the release zip you downloaded was *not* notarized (this is the case for all `0.2.x` GitHub builds at the moment), strip the quarantine flag once after install:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/MacGenuity.app
+open /Applications/MacGenuity.app
+```
+
+That's a one-time operation per install. It does not weaken Gatekeeper for any other app.
+
+### For releasers — the permanent fix
+
+The only way to ship a release that opens cleanly with no user-side tricks is **Developer ID signing + Apple notarization**. The recipe is in [Distribution build](#distribution-build-release-zip-for-github) above. In short:
+
+1. Build with a `Developer ID Application` cert (NOT an `Apple Development` cert — those are for local dev only and are rejected by Gatekeeper for downloaded apps).
+2. Submit the zip to `xcrun notarytool`.
+3. Staple the ticket to the `.app` with `xcrun stapler`.
+4. Re-zip the stapled `.app` and upload that.
+
+The Apple Developer Program ($99/year) is the gating requirement — Apple does not notarize binaries signed with free Personal Team or Apple Development certs.
+
+---
+
+## Troubleshooting
+
+### Tray / app icon shows the wrong glyph after upgrading
+
+After a version bump or a bundle-identifier change, macOS sometimes shows a stale icon cached against the old identity. The fix is to nudge Launch Services + Icon Services + Finder:
+
+```bash
+# Re-register the new bundle
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MacGenuity.app
+
+# Refresh the system icon caches
+sudo rm -rf /Library/Caches/com.apple.iconservices.store
+
+# Restart the surfaces that draw icons
+killall Finder
+killall Dock
+killall SystemUIServer
+```
+
+If the icon in **System Settings → Privacy & Security → Input Monitoring** still looks generic, scroll the list — macOS sometimes lazily redraws the row.
+
+### Custom AppIcon.png looks blurry at small sizes
+
+`sips -z` downscaling from a single 1024 × 1024 source produces acceptable but not pixel-perfect 16 × 16 / 32 × 32 entries. For a polished release icon, design a proper `.iconset` folder by hand (one PNG per size from 16 × 16 up to 1024 × 1024 with `@2x` variants) and ship it as `Resources/AppIcon.icns` — `build.sh` will copy it straight through instead of regenerating.
 
 ---
 
