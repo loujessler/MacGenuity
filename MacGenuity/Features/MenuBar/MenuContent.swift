@@ -85,19 +85,18 @@ struct MenuContent: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
             // macOS pins Input Monitoring grants to a binary's *cdhash*,
-            // not its bundle ID. Ad-hoc signing regenerates the cdhash on
-            // every build, so the toggle in System Settings still shows
-            // ON but it's for a stale cdhash — the running process keeps
-            // getting denied. The only reliable fix is to remove the
-            // stale entry and let macOS re-prompt against the new hash.
-            Text("Toggle in System Settings shows ON but the app still says denied?\nThis is a macOS code-signing quirk — TCC binds the grant to the binary's signature, which changes on every dev rebuild.")
+            // not its bundle ID. Re-signing with a different cert (e.g.
+            // Apple Development → Developer ID) regenerates the cdhash,
+            // so the toggle in System Settings still shows ON but it's
+            // pinned to the stale hash and the running process keeps
+            // getting denied. "Reset & Relaunch" wipes the TCC entry
+            // entirely via `tccutil reset`, then quits + reopens so the
+            // OS re-prompts against the current cdhash.
+            Text("Toggle in System Settings shows ON but the app still says denied? macOS code-signing quirk — TCC binds the grant to the binary's signature, which changes when the app is re-signed.")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Fix:")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text("1. Click \"System Settings\"\n2. Select MacGenuity in the Input Monitoring list\n3. Click the − button to remove it\n4. Click \"Relaunch\" — macOS will prompt fresh, click Allow")
+            Text("Recommended: click \"Reset & Relaunch\" below — it wipes the cached permission entry and restarts so macOS prompts fresh.")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -105,8 +104,11 @@ struct MenuContent: View {
                 Button("System Settings") { viewModel.openInputMonitoringSettings() }
                     .buttonStyle(.bordered).controlSize(.small)
                 Button("Relaunch") { relaunchApp() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Just quit and reopen — keeps the existing TCC entry")
+                Button("Reset & Relaunch") { resetTCCAndRelaunch() }
                     .buttonStyle(.borderedProminent).controlSize(.small)
-                    .help("Quit MacGenuity and immediately re-open it")
+                    .help("Run `tccutil reset ListenEvent` to wipe the cached grant, then quit and reopen so macOS prompts fresh")
             }
         }
         .padding(.horizontal, 14)
@@ -134,6 +136,25 @@ struct MenuContent: View {
             // state.
             NSApp.terminate(nil)
         }
+    }
+
+    /// Wipes the cached Input Monitoring grant for this bundle via
+    /// `tccutil reset ListenEvent <bundle id>`, then performs a normal
+    /// relaunch. The next launch will trigger a fresh TCC prompt and
+    /// (as a side effect) refresh the icon System Settings displays for
+    /// this app in its list.
+    ///
+    /// `tccutil reset` is user-scoped for ListenEvent — no sudo or
+    /// admin prompt required. We don't block on its completion: even
+    /// if it somehow fails the subsequent relaunch is harmless.
+    private func resetTCCAndRelaunch() {
+        let bundleID = Bundle.main.bundleIdentifier ?? "io.github.loujessler.macgenuity"
+        let reset = Process()
+        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        reset.arguments = ["reset", "ListenEvent", bundleID]
+        try? reset.run()
+        reset.waitUntilExit()
+        relaunchApp()
     }
 
     @ViewBuilder
