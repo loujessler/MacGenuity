@@ -14,13 +14,24 @@ final class DefaultHyperXProfile: DeviceProfile {
     let displayName = "Generic HyperX (NGenuity2)"
     let author = "MacGenuity"
 
-    let capabilities: DeviceCapabilities = [.info, .battery, .lighting, .dpiProfiles, .hasteDirect]
+    let capabilities: DeviceCapabilities = [.info, .battery, .lighting, .dpiProfiles, .hasteDirect, .buttons]
 
     func match(_ fp: DeviceFingerprint) -> Double {
         let known: Set<Int> = [0x0951, 0x03F0]
         let lower = fp.lowercaseProduct
-        var score = 0.0
 
+        // Hard opt-out for non-mouse families. The HyperX VIDs are shared
+        // across mice, headsets and microphones; a SoloCast on VID 0x03F0
+        // would otherwise score 0.6 here, get picked as the "best" HID
+        // candidate, and then explode trying to speak the Pulsefire mouse
+        // protocol to a mic — surfaced as a misleading "device not found"
+        // error with no obvious recovery.
+        let nonMouseKeywords = ["cast", "cloud", "headset", "alloy"]
+        if nonMouseKeywords.contains(where: { lower.contains($0) }) {
+            return 0
+        }
+
+        var score = 0.0
         if known.contains(fp.vendorID) { score += 0.6 }
         if lower.contains("hyperx")    { score += 0.15 }
         if lower.contains("pulsefire") { score += 0.15 }
@@ -237,6 +248,34 @@ final class DefaultHyperXProfile: DeviceProfile {
         packets.append(ProfilePacket(bytes: select, label: "selectDPIProfile p=\(activeProfile)"))
 
         return packets
+    }
+
+    // MARK: - Button assignments (0xD4 — NGenuity2 protocol)
+
+    /// `D4 PB AT 02 CODE 04` — see santeri3700/hyperx_pulsefire_dart_reverse_engineering
+    /// /protocol/index.md#set-button-assignment.
+    ///
+    ///   • byte 1 = physical button (0x00…0x05)
+    ///   • byte 2 = assignment type (0x01 mouse, 0x03 media, 0x07 DPI switch)
+    ///   • byte 3 = `0x02` — "2 bytes follow"
+    ///   • byte 4 = function code
+    ///   • byte 5 = `0x04` for everything except macros (0x00). We don't
+    ///     emit macros from here, so this is hardcoded.
+    ///
+    /// The packet must be followed by `commitPacket()` (`DE 03 00`) for
+    /// the device to apply it on the next event — same as DPI batches.
+    func buttonAssignmentPackets(_ assignment: ButtonAssignment) -> [ProfilePacket] {
+        var packet = Data(count: PacketUtils.packetSize)
+        packet[0] = 0xD4
+        packet[1] = UInt8(assignment.button.rawValue)
+        packet[2] = assignment.action.assignmentTypeByte
+        packet[3] = 0x02
+        packet[4] = assignment.action.code
+        packet[5] = 0x04
+        return [
+            ProfilePacket(bytes: packet,
+                          label: "setButton \(assignment.button.title) → \(assignment.action.title)")
+        ]
     }
 
     /// `DE 03 00` — NGENUITY sends this immediately after every DPI / button

@@ -120,25 +120,36 @@ actor HyperXDeviceService: DeviceService {
         var firstError: HIDError?
 
         if profile.capabilities.contains(.info) {
-            do {
-                info = try executeRequest(profile.infoRequests(),
-                                          transport: transport,
-                                          parse: profile.parseInfo)
-            } catch let error as HIDError {
-                firstError = error
-                logger.warning(.hid, "probe: info failed: \(error.localizedDescription)")
+            // Profiles that advertise `.info` but don't actually have an
+            // info command to send (QuadCast family — info is exposed via
+            // USB descriptors / CoreAudio, not HID) return an empty list.
+            // Treat that as "no info available" instead of looping over
+            // zero packets and surfacing a misleading readTimeout error.
+            let requests = profile.infoRequests()
+            if !requests.isEmpty {
+                do {
+                    info = try executeRequest(requests,
+                                              transport: transport,
+                                              parse: profile.parseInfo)
+                } catch let error as HIDError {
+                    firstError = error
+                    logger.warning(.hid, "probe: info failed: \(error.localizedDescription)")
+                }
             }
         }
 
         if profile.capabilities.contains(.battery) {
-            do {
-                let battery = try executeRequest(profile.batteryRequests(),
-                                                 transport: transport,
-                                                 parse: profile.parseBattery)
-                return DeviceSnapshot(info: info, battery: battery, error: firstError)
-            } catch let error as HIDError {
-                logger.warning(.hid, "probe: battery failed: \(error.localizedDescription)")
-                return DeviceSnapshot(info: info, battery: nil, error: error)
+            let requests = profile.batteryRequests()
+            if !requests.isEmpty {
+                do {
+                    let battery = try executeRequest(requests,
+                                                     transport: transport,
+                                                     parse: profile.parseBattery)
+                    return DeviceSnapshot(info: info, battery: battery, error: firstError)
+                } catch let error as HIDError {
+                    logger.warning(.hid, "probe: battery failed: \(error.localizedDescription)")
+                    return DeviceSnapshot(info: info, battery: nil, error: error)
+                }
             }
         }
 
@@ -281,6 +292,33 @@ actor HyperXDeviceService: DeviceService {
         for packet in packets {
             try send(packet, transport: transport)
         }
+        if let commit = active.commitPacket() {
+            try send(commit, transport: transport)
+        }
+    }
+
+    // MARK: - Button assignments
+
+    func applyButtonAssignment(_ assignment: ButtonAssignment) async throws {
+        try await applyButtonAssignments([assignment])
+    }
+
+    func applyButtonAssignments(_ assignments: [ButtonAssignment]) async throws {
+        guard !assignments.isEmpty else { return }
+        try ensureTransport()
+        guard let transport, let active = self.activeProfile else {
+            throw HIDError.deviceNotFound
+        }
+        guard active.capabilities.contains(.buttons) else { return }
+
+        for assignment in assignments {
+            for packet in active.buttonAssignmentPackets(assignment) {
+                try send(packet, transport: transport)
+            }
+        }
+        // Same `DE 03 00` commit used after DPI batches — the device
+        // accepts the writes but doesn't apply them on the next click
+        // without it.
         if let commit = active.commitPacket() {
             try send(commit, transport: transport)
         }

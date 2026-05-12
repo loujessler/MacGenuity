@@ -49,6 +49,16 @@ protocol DeviceService: AnyObject {
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async
     func sendHasteDirectFrame(_ color: RGBColor) async throws
 
+    /// Re-bind one physical button. Followed by `commitPacket()` so the
+    /// device persists the change immediately. Mirrors `applyDPIBatch`'s
+    /// commit pattern.
+    func applyButtonAssignment(_ assignment: ButtonAssignment) async throws
+
+    /// Apply a full set of button assignments at once. Sends each `0xD4`
+    /// packet then a single commit at the end — minimises the number of
+    /// `DE 03 00` round-trips.
+    func applyButtonAssignments(_ assignments: [ButtonAssignment]) async throws
+
     /// Snapshot of the currently resolved profile (if any). UI uses this to
     /// show capabilities and the chosen profile identifier.
     func snapshotProfile() async -> ActiveProfileSnapshot?
@@ -67,4 +77,17 @@ protocol DeviceService: AnyObject {
 
 protocol AudioService: AnyObject {
     func connectedMicrophones() -> [MicrophoneInfo]
+
+    /// Toggle the hardware/software mute flag for `deviceID`. Returns
+    /// `true` if CoreAudio accepted the write — `false` means the
+    /// device doesn't expose a settable mute (some HyperX mics route
+    /// mute through the on-device tap-to-mute and refuse remote control).
+    @discardableResult
+    func setMicrophoneMute(_ muted: Bool, deviceID: UInt32) -> Bool
+
+    /// Set input-volume scalar in `[0, 1]`. Returns false if the device
+    /// has no software volume (in which case the user has to use the
+    /// hardware gain dial).
+    @discardableResult
+    func setMicrophoneVolume(_ scalar: Float, deviceID: UInt32) -> Bool
 }

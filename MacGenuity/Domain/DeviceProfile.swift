@@ -22,8 +22,12 @@ struct DeviceCapabilities: OptionSet, Hashable {
     static let lighting     = DeviceCapabilities(rawValue: 1 << 2)
     static let dpiProfiles  = DeviceCapabilities(rawValue: 1 << 3)
     static let hasteDirect  = DeviceCapabilities(rawValue: 1 << 4)
+    /// `0xD4` — re-bind a physical button to a different mouse / media /
+    /// DPI function. NGenuity2 protocol, documented in
+    /// hyperx_pulsefire_dart_reverse_engineering.
+    static let buttons      = DeviceCapabilities(rawValue: 1 << 5)
 
-    static let all: DeviceCapabilities = [.info, .battery, .lighting, .dpiProfiles, .hasteDirect]
+    static let all: DeviceCapabilities = [.info, .battery, .lighting, .dpiProfiles, .hasteDirect, .buttons]
 
     var labels: [String] {
         var out: [String] = []
@@ -31,6 +35,7 @@ struct DeviceCapabilities: OptionSet, Hashable {
         if contains(.battery)     { out.append("Battery") }
         if contains(.lighting)    { out.append("Lighting") }
         if contains(.dpiProfiles) { out.append("DPI") }
+        if contains(.buttons)     { out.append("Buttons") }
         if contains(.hasteDirect) { out.append("Haste direct") }
         return out
     }
@@ -131,6 +136,13 @@ protocol DeviceProfile: AnyObject {
     func hasteDirectFrame(_ color: RGBColor) -> ProfilePacket?
     func hasteSetupPacket() -> ProfilePacket?
 
+    // MARK: - Buttons
+
+    /// Build the wire packets for one button re-bind (`0xD4` family).
+    /// Profiles without `.buttons` capability return `[]` — the default
+    /// implementation does exactly that.
+    func buttonAssignmentPackets(_ assignment: ButtonAssignment) -> [ProfilePacket]
+
     /// Returned packet is sent after a batch of settings writes (DPI,
     /// button remap, etc.) to commit them on the device. NGENUITY uses
     /// `DE 03 00` for this on Pulsefire devices; without it the device
@@ -144,6 +156,7 @@ extension DeviceProfile {
     func hasteDirectFrame(_ color: RGBColor) -> ProfilePacket? { nil }
     func hasteSetupPacket() -> ProfilePacket? { nil }
     func commitPacket() -> ProfilePacket? { nil }
+    func buttonAssignmentPackets(_ assignment: ButtonAssignment) -> [ProfilePacket] { [] }
 
     /// Default batch implementation: combine per-level `dpiPackets` calls
     /// and a final select. Profiles for devices with different protocols

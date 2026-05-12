@@ -49,6 +49,7 @@ final class DeviceViewModel: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
+    private var microphoneObserver: NSObjectProtocol?
     /// Restores the previous lighting state after a DPI profile colour flash.
     /// Cancellable so rapid radio clicks coalesce into one final restore.
     private var dpiPreviewRestoreTask: Task<Void, Never>?
@@ -73,6 +74,26 @@ final class DeviceViewModel: ObservableObject {
         self.notifier = notifier ?? Notifier.shared
         self.logger = logger
         self.accessState = self.deviceService.currentAccessState()
+
+        // Push updates from CoreAudio: when the on-device tap-to-mute
+        // pad or any other app toggles the input device's mute / volume
+        // state, refresh immediately instead of waiting for the next
+        // poll tick (which can be 60 s away).
+        microphoneObserver = NotificationCenter.default.addObserver(
+            forName: .microphoneStateChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.refresh()
+            }
+        }
+    }
+
+    deinit {
+        if let microphoneObserver {
+            NotificationCenter.default.removeObserver(microphoneObserver)
+        }
     }
 
     /// State for the currently active device, or default if none.
@@ -124,6 +145,20 @@ final class DeviceViewModel: ObservableObject {
         }
     }
 
+    /// One-shot first-launch helper. If macOS has never seen us ask for
+    /// Input Monitoring, `currentAccessState()` returns `.unknown` and
+    /// no system prompt is ever shown — `IOHIDRequestAccess` is what
+    /// actually triggers the TCC dialog. Call this at app startup so
+    /// the user gets the standard "MacGenuity wants to monitor input"
+    /// alert instead of silently broken HID probing.
+    func requestAccessIfNeeded() async {
+        let state = deviceService.currentAccessState()
+        accessState = state
+        guard state == .unknown else { return }
+        logger.info(.app, "first-launch: triggering Input Monitoring prompt")
+        await requestAccess()
+    }
+
     func openInputMonitoringSettings() {
         HIDPermission.openSystemSettings()
     }
@@ -160,16 +195,29 @@ final class DeviceViewModel: ObservableObject {
         do {
             let snapshot = try await deviceService.probe()
             let newProfile = await deviceService.snapshotProfile()
-            // Detect device-switch and notify observers so they can hydrate
-            // their UI state (sliders, pickers, color) from the per-device
-            // store instead of leaking the previous device's selection.
-            if let fp = newProfile?.fingerprint, fp.stableKey != lastFingerprintKey {
-                lastFingerprintKey = fp.stableKey
-                logger.info(.app, "device switched to \(fp.stableKey)")
-                NotificationCenter.default.post(
-                    name: .deviceDidChange, object: nil,
-                    userInfo: ["fingerprint": fp]
-                )
+            let newKey = newProfile?.fingerprint.stableKey
+
+            // Detect device-switch and CLEAR cached state. Without this,
+            // unplugging a Pulsefire while a QuadCast remains attached
+            // would leave the mouse's stale battery glyph in the menu
+            // bar — the new active profile (QuadCast) has no battery
+            // capability and its probe returns nil battery, but the
+            // previous `self.battery` was never reset.
+            if newKey != lastFingerprintKey {
+                self.info = nil
+                self.battery = nil
+                self.lastError = nil
+                self.lastUpdate = nil
+                if let key = newKey, let fp = newProfile?.fingerprint {
+                    logger.info(.app, "device switched to \(key)")
+                    NotificationCenter.default.post(
+                        name: .deviceDidChange, object: nil,
+                        userInfo: ["fingerprint": fp]
+                    )
+                } else {
+                    logger.info(.app, "active HID device cleared")
+                }
+                lastFingerprintKey = newKey
             }
             self.activeProfile = newProfile
 
@@ -186,6 +234,12 @@ final class DeviceViewModel: ObservableObject {
                         deviceName: info?.displayName
                     )
                 }
+            } else if newProfile?.capabilities.contains(.battery) != true {
+                // Defensive: if the active profile genuinely has no
+                // battery capability (a microphone, say), make sure the
+                // UI doesn't keep a stale value across a refresh.
+                self.battery = nil
+                self.lastUpdate = nil
             }
             self.lastError = snapshot.error?.errorDescription
 
@@ -343,6 +397,55 @@ final class DeviceViewModel: ObservableObject {
         } catch {
             lastControlMessage = "DPI failed: \(error.localizedDescription)"
             logger.error(.hid, "applyDPI: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Microphones
+
+    /// Toggle mute on a HyperX microphone via CoreAudio. Triggers a
+    /// refresh so the UI mirrors what actually happened on the device.
+    func setMicrophoneMute(_ muted: Bool, for mic: MicrophoneInfo) async {
+        let ok = audioService.setMicrophoneMute(muted, deviceID: mic.id)
+        lastControlMessage = ok
+            ? "Microphone \(muted ? "muted" : "unmuted")"
+            : "Mute not settable (use the on-device tap-to-mute)"
+        await refresh()
+    }
+
+    /// Set software input volume on a HyperX microphone (0…100 %).
+    /// QuadCast / SoloCast may refuse this and require the hardware
+    /// gain dial — in that case `ok == false` and we surface a note.
+    func setMicrophoneVolume(_ percent: Int, for mic: MicrophoneInfo) async {
+        let scalar = Float(max(0, min(100, percent))) / 100.0
+        let ok = audioService.setMicrophoneVolume(scalar, deviceID: mic.id)
+        if !ok {
+            lastControlMessage = "Volume not settable in software — use the hardware gain dial"
+        }
+        await refresh()
+    }
+
+    // MARK: - Buttons
+
+    /// Send the full set of `0xD4` packets followed by a single commit,
+    /// then mirror the new mapping into per-device state so reopening
+    /// the editor shows what the device actually has.
+    func applyButtonAssignments(_ assignments: [ButtonAssignment]) async {
+        keepaliveTask?.cancel(); keepaliveTask = nil
+        do {
+            try await deviceService.applyButtonAssignments(assignments)
+            if let fp = activeProfile?.fingerprint {
+                deviceStates.record(buttons: DeviceButtonState(assignments: assignments),
+                                    for: fp)
+            }
+            lastControlMessage = "Button assignments applied"
+        } catch HIDError.notPermitted {
+            accessState = .denied
+            lastControlMessage = "Permission required"
+        } catch HIDError.deviceNotFound {
+            lastControlMessage = "Device not found — replug receiver"
+        } catch {
+            lastControlMessage = "Buttons failed: \(error.localizedDescription)"
+            logger.error(.hid, "applyButtonAssignments: \(error.localizedDescription)")
         }
     }
 

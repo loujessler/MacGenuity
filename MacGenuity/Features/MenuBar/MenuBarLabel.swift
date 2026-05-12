@@ -13,10 +13,19 @@ struct MenuBarLabel: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
-        // Single always-on icon path. The status influences which symbol
-        // is shown but never collapses to nothing — that was the cause of
-        // "tray icon disappears when mouse disconnects".
-        if let battery = viewModel.battery, viewModel.status != .disconnected {
+        // Two cases, no overlays:
+        //   • a device with a battery → show the battery glyph and (opt.)
+        //     percentage. That's the most actionable status the user can
+        //     have in their peripheral vision.
+        //   • everything else (no battery / nothing connected / mic only
+        //     / probe error) → show the plain HyperX mark.
+        //
+        // Permission denied is the one exception: it's a system-level
+        // problem the user must resolve in System Settings, so we surface
+        // a shield instead of letting it hide behind the brand glyph.
+        if viewModel.status == .permissionRequired {
+            Image(systemName: "lock.shield")
+        } else if let battery = viewModel.battery, viewModel.status != .disconnected {
             HStack(spacing: 2) {
                 Image(systemName: batteryIcon(battery))
                 if settings.showBatteryPercent {
@@ -25,24 +34,7 @@ struct MenuBarLabel: View {
                 }
             }
         } else {
-            Image(systemName: brandedFallbackIcon)
-        }
-    }
-
-    /// Branded "no battery readout" icon. Picks the symbol that best
-    /// describes the *current* state but never returns nil / blank.
-    private var brandedFallbackIcon: String {
-        switch viewModel.status {
-        case .permissionRequired:
-            return "lock.shield"
-        case .disconnected:
-            // Mouse is gone but we keep the same family glyph so the user
-            // still recognises it as "their HyperX app".
-            return "computermouse.slash"
-        case .error:
-            return "exclamationmark.triangle.fill"
-        case .unknown, .connected:
-            return "computermouse"
+            HyperXMark()
         }
     }
 

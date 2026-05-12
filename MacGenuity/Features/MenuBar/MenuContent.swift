@@ -84,24 +84,56 @@ struct MenuContent: View {
             Text("Input Monitoring access required")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text("If the toggle in System Settings is already ON but the app says denied, the build's signature changed. Remove MacGenuity from the list (− button) and re-grant after the next launch.")
+            // macOS pins Input Monitoring grants to a binary's *cdhash*,
+            // not its bundle ID. Ad-hoc signing regenerates the cdhash on
+            // every build, so the toggle in System Settings still shows
+            // ON but it's for a stale cdhash — the running process keeps
+            // getting denied. The only reliable fix is to remove the
+            // stale entry and let macOS re-prompt against the new hash.
+            Text("Toggle in System Settings shows ON but the app still says denied?\nThis is a macOS code-signing quirk — TCC binds the grant to the binary's signature, which changes on every dev rebuild.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Fix:")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("1. Click \"System Settings\"\n2. Select MacGenuity in the Input Monitoring list\n3. Click the − button to remove it\n4. Click \"Relaunch\" — macOS will prompt fresh, click Allow")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
-                Button("Grant") { Task { await viewModel.requestAccess() } }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button("Recheck") {
-                    viewModel.refreshAccessState()
-                    Task { await viewModel.refresh() }
-                }
-                .buttonStyle(.bordered).controlSize(.small)
                 Button("System Settings") { viewModel.openInputMonitoringSettings() }
                     .buttonStyle(.bordered).controlSize(.small)
+                Button("Relaunch") { relaunchApp() }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .help("Quit MacGenuity and immediately re-open it")
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)
+    }
+
+    /// Quits the current process and `open`s the same bundle from a
+    /// detached child. `open -n` ensures macOS treats it as a fresh
+    /// launch (new process, new TCC permission snapshot) instead of
+    /// just reactivating the existing one.
+    private func relaunchApp() {
+        let bundlePath = Bundle.main.bundleURL.path
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-n", bundlePath]
+        do {
+            try task.run()
+            // Give `open` a beat to spawn the new process before we exit.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                NSApp.terminate(nil)
+            }
+        } catch {
+            // Fall back to a plain terminate — user will have to relaunch
+            // manually but at least we don't leave the app in a broken
+            // state.
+            NSApp.terminate(nil)
+        }
     }
 
     @ViewBuilder
@@ -146,13 +178,61 @@ struct MenuContent: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 2)
             ForEach(viewModel.microphones) { mic in
-                detailRow(label: "Device",
-                          value: mic.displayName + (mic.isDefaultInput ? " (default)" : ""))
-                if let muted = mic.isMuted {
-                    detailRow(label: "Mute", value: muted ? "Muted" : "Live")
-                }
+                microphoneRow(mic)
             }
         }
+    }
+
+    /// Quick mute/unmute row. Tap toggles via CoreAudio, the property
+    /// listener pushes the new state back, and SwiftUI re-renders the
+    /// row — all without closing the menu (the `.window` MenuBarExtra
+    /// style keeps the panel open on button taps).
+    private func microphoneRow(_ mic: MicrophoneInfo) -> some View {
+        let muted = mic.isMuted == true
+        return HStack(spacing: 8) {
+            Image(systemName: muted ? "mic.slash.fill" : "mic.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(muted ? Color.red : Color.primary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(mic.displayName)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if mic.isDefaultInput {
+                    Text("default input")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 8)
+
+            if mic.isMuted != nil {
+                // The toggle represents "microphone is live" — ON means
+                // the mic is picking up sound, OFF means muted. This is
+                // the inverse of CoreAudio's `kAudioDevicePropertyMute`,
+                // so the binding flips the value on the way in/out.
+                Toggle("", isOn: Binding(
+                    get: { !muted },
+                    set: { isLive in
+                        Task { await viewModel.setMicrophoneMute(!isLive, for: mic) }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .help(muted ? "Switch on to unmute" : "Switch off to mute")
+            } else {
+                // Some HyperX mics route mute exclusively through the
+                // on-device tap pad and don't expose a settable CoreAudio
+                // property. Show a hint instead of a non-functional toggle.
+                Text("hardware only")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
     }
 
     private func profileBadge(_ active: ActiveProfileSnapshot) -> some View {

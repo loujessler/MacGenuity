@@ -80,11 +80,53 @@ struct DeviceDPIState: Codable, Equatable {
     )
 }
 
+/// Per-device button-remap state. Keyed by physical button so missing
+/// entries fall back to the factory default in `ButtonAction.factoryDefault`.
+struct DeviceButtonState: Codable, Equatable {
+    var assignments: [ButtonAssignment]
+
+    static let `default` = DeviceButtonState(
+        assignments: PhysicalButton.allCases.map { btn in
+            ButtonAssignment(button: btn, action: ButtonAction.factoryDefault(for: btn))
+        }
+    )
+
+    /// Returns the assignment for `button`, falling back to factory default
+    /// if the device hasn't been customised yet.
+    func action(for button: PhysicalButton) -> ButtonAction {
+        assignments.first(where: { $0.button == button })?.action
+            ?? ButtonAction.factoryDefault(for: button)
+    }
+}
+
 struct DeviceState: Codable, Equatable {
     var lighting: DeviceLightingState
     var dpi: DeviceDPIState
+    var buttons: DeviceButtonState
 
-    static let `default` = DeviceState(lighting: .default, dpi: .default)
+    static let `default` = DeviceState(
+        lighting: .default,
+        dpi: .default,
+        buttons: .default
+    )
+
+    // Custom decoder: legacy stores written before `buttons` was added
+    // would otherwise fail to decode, dropping all per-device state.
+    enum CodingKeys: String, CodingKey { case lighting, dpi, buttons }
+
+    init(lighting: DeviceLightingState, dpi: DeviceDPIState, buttons: DeviceButtonState) {
+        self.lighting = lighting
+        self.dpi = dpi
+        self.buttons = buttons
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.lighting = try container.decode(DeviceLightingState.self, forKey: .lighting)
+        self.dpi = try container.decode(DeviceDPIState.self, forKey: .dpi)
+        self.buttons = try container.decodeIfPresent(DeviceButtonState.self, forKey: .buttons)
+            ?? .default
+    }
 }
 
 extension DeviceFingerprint {
@@ -127,6 +169,10 @@ final class DeviceStateStore: ObservableObject {
 
     func record(dpi: DeviceDPIState, for fingerprint: DeviceFingerprint) {
         update(fingerprint) { $0.dpi = dpi }
+    }
+
+    func record(buttons: DeviceButtonState, for fingerprint: DeviceFingerprint) {
+        update(fingerprint) { $0.buttons = buttons }
     }
 
     /// Backwards-compat helper used by the live-stream path: updates

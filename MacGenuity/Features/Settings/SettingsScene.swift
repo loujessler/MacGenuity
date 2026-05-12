@@ -2,8 +2,15 @@
 //  SettingsScene.swift
 //  MacGenuity
 //
-//  Settings window. Hosts the live device-control editors that used to
-//  clutter the menu-bar dropdown. Open via the menu's Settings… button.
+//  Settings window. The "Devices" tab follows BetterDisplay's pattern:
+//  a sidebar lists every connected HyperX device (HID + CoreAudio mic),
+//  and the detail pane shows ONLY the controls that device's profile
+//  actually supports — a mouse exposes lighting + DPI, a microphone
+//  exposes audio properties, and a device with no recognised capability
+//  shows a friendly "no controls available" notice.
+//
+//  There are no top-level "Lighting" or "DPI" tabs by design: those
+//  controls live inside the device they belong to.
 //
 
 import SwiftUI
@@ -19,11 +26,8 @@ struct SettingsScene: View {
             GeneralPane(settings: settings)
                 .tabItem { Label("General", systemImage: "gearshape") }
 
-            LightingPane(viewModel: viewModel, presetStore: presetStore)
-                .tabItem { Label("Lighting", systemImage: "lightbulb") }
-
-            DPIPane(viewModel: viewModel)
-                .tabItem { Label("DPI", systemImage: "scope") }
+            DevicesPane(viewModel: viewModel, presetStore: presetStore)
+                .tabItem { Label("Devices", systemImage: "externaldrive.connected.to.line.below") }
 
             ProfilesPane(viewModel: viewModel)
                 .tabItem { Label("Profiles", systemImage: "puzzlepiece.extension") }
@@ -31,7 +35,7 @@ struct SettingsScene: View {
             AboutPane()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 540, height: 460)
+        .frame(width: 720, height: 520)
     }
 }
 
@@ -73,9 +77,375 @@ private struct GeneralPane: View {
     }
 }
 
-// MARK: - Lighting
+// MARK: - Devices (sidebar + detail)
 
-private struct LightingPane: View {
+private struct DevicesPane: View {
+    @ObservedObject var viewModel: DeviceViewModel
+    @ObservedObject var presetStore: PresetStore
+
+    /// Locally-tracked sidebar selection. Stored as the `ConfigurableDevice.id`
+    /// string so the value survives reorderings of `availableDevices` /
+    /// `microphones` between refreshes.
+    @State private var selection: String?
+
+    var body: some View {
+        let devices = unifiedDevices()
+
+        NavigationSplitView {
+            sidebar(devices: devices)
+                .frame(minWidth: 220, idealWidth: 240)
+        } detail: {
+            detail(for: resolved(in: devices))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear {
+            ensureValidSelection(in: devices)
+        }
+        .onChange(of: viewModel.availableDevices) { _ in
+            let updated = unifiedDevices()
+            ensureValidSelection(in: updated)
+        }
+        .onChange(of: viewModel.microphones) { _ in
+            let updated = unifiedDevices()
+            ensureValidSelection(in: updated)
+        }
+    }
+
+    // MARK: Sidebar
+
+    private func sidebar(devices: [ConfigurableDevice]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Text("Connected").font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Re-scan connected devices")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+
+            if devices.isEmpty {
+                emptySidebarState
+            } else {
+                List(selection: $selection) {
+                    ForEach(ConfigurableDevice.Category.allCases, id: \.self) { category in
+                        let group = devices.filter { $0.category == category }
+                        if !group.isEmpty {
+                            Section(category.title) {
+                                ForEach(group) { device in
+                                    sidebarRow(device)
+                                        .tag(device.id as String?)
+                                }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+                .onChange(of: selection) { newValue in
+                    handleSelectionChange(to: newValue, in: devices)
+                }
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private func sidebarRow(_ device: ConfigurableDevice) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: device.iconName)
+                .frame(width: 18)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.displayName)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                if let subtitle = subtitle(for: device) {
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var emptySidebarState: some View {
+        VStack(alignment: .center, spacing: 6) {
+            Image(systemName: "powerplug")
+                .font(.system(size: 22))
+                .foregroundStyle(.tertiary)
+            Text("No HyperX devices connected")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text("Plug a device in and press Refresh.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16)
+    }
+
+    private func subtitle(for device: ConfigurableDevice) -> String? {
+        switch device {
+        case .hid(let fp):
+            // Show capabilities of the resolved profile — that's what the
+            // user actually gets to control. Fall back to VID/PID.
+            if let active = viewModel.activeProfile,
+               active.fingerprint.stableKey == fp.stableKey
+            {
+                return active.capabilities.labels.joined(separator: " · ")
+            }
+            return "\(Hex.u16(fp.vendorID))/\(Hex.u16(fp.productID))"
+        case .microphone(let mic):
+            if mic.isDefaultInput { return "Default input" }
+            if let muted = mic.isMuted { return muted ? "Muted" : "Live" }
+            return nil
+        }
+    }
+
+    // MARK: Detail
+
+    @ViewBuilder
+    private func detail(for device: ConfigurableDevice?) -> some View {
+        if let device {
+            switch device {
+            case .hid(let fp):
+                HIDDeviceDetail(
+                    fingerprint: fp,
+                    viewModel: viewModel,
+                    presetStore: presetStore
+                )
+            case .microphone(let mic):
+                MicrophoneDetail(microphone: mic, viewModel: viewModel)
+            }
+        } else {
+            placeholder
+        }
+    }
+
+    private var placeholder: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 36))
+                .foregroundStyle(.tertiary)
+            Text("Pick a device on the left")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            Text("Each device exposes only the controls its profile supports — there's no separate Lighting or DPI tab.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: Selection plumbing
+
+    /// Build the deduped, sorted device list. Audio devices that have a
+    /// matching HID interface (same product name, e.g. a QuadCast appearing
+    /// as both HID and CoreAudio) are kept on the audio side because that
+    /// entry has more user-actionable data (volume, mute, sample rate).
+    private func unifiedDevices() -> [ConfigurableDevice] {
+        let mics = viewModel.microphones.map { ConfigurableDevice.microphone($0) }
+        let micNames = Set(viewModel.microphones.map { $0.displayName.lowercased() })
+
+        let hids = viewModel.availableDevices.compactMap { fp -> ConfigurableDevice? in
+            // Drop the HID interface if a microphone with the same product
+            // name is already in the list — same physical device, different
+            // bus.
+            let lower = fp.lowercaseProduct
+            if !lower.isEmpty, micNames.contains(where: { $0.contains(lower) || lower.contains($0) }) {
+                return nil
+            }
+            return .hid(fp)
+        }
+
+        return hids + mics
+    }
+
+    private func resolved(in devices: [ConfigurableDevice]) -> ConfigurableDevice? {
+        guard let id = selection else { return devices.first }
+        return devices.first(where: { $0.id == id }) ?? devices.first
+    }
+
+    private func ensureValidSelection(in devices: [ConfigurableDevice]) {
+        if let id = selection, devices.contains(where: { $0.id == id }) { return }
+        selection = devices.first?.id
+        if let first = devices.first {
+            handleSelectionChange(to: first.id, in: devices)
+        }
+    }
+
+    /// When the user picks a HID device, push that choice down to the view
+    /// model so subsequent control commands target it. Microphones don't
+    /// have an "active device" concept — they're informational only.
+    private func handleSelectionChange(to id: String?, in devices: [ConfigurableDevice]) {
+        guard let id, let device = devices.first(where: { $0.id == id }) else { return }
+        if case .hid(let fp) = device,
+           viewModel.selectedDeviceKey != fp.stableKey
+        {
+            Task { await viewModel.setActiveDevice(fp) }
+        }
+    }
+}
+
+// MARK: - HID device detail
+
+private struct HIDDeviceDetail: View {
+    let fingerprint: DeviceFingerprint
+    @ObservedObject var viewModel: DeviceViewModel
+    @ObservedObject var presetStore: PresetStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                Divider()
+
+                if let active = viewModel.activeProfile,
+                   active.fingerprint.stableKey == fingerprint.stableKey
+                {
+                    if active.capabilities.contains(.battery), let battery = viewModel.battery {
+                        BatterySection(battery: battery)
+                    }
+                    if active.capabilities.contains(.lighting) {
+                        CollapsibleSection(title: "Lighting", systemImage: "lightbulb") {
+                            LightingSection(viewModel: viewModel, presetStore: presetStore)
+                        }
+                    }
+                    if active.capabilities.contains(.dpiProfiles) {
+                        CollapsibleSection(title: "DPI", systemImage: "scope") {
+                            DPISection(viewModel: viewModel)
+                        }
+                    }
+                    if active.capabilities.contains(.buttons) {
+                        CollapsibleSection(title: "Buttons", systemImage: "rectangle.grid.2x2") {
+                            ButtonsSection(viewModel: viewModel,
+                                           fingerprint: fingerprint)
+                        }
+                    }
+                    let supported: DeviceCapabilities = [.lighting, .dpiProfiles, .battery, .buttons]
+                    if active.capabilities.intersection(supported).isEmpty {
+                        noControlsNotice(profileName: active.displayName)
+                    }
+                } else {
+                    profileResolutionNotice
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: deviceIcon)
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(fingerprint.product.isEmpty ? "Unnamed HyperX" : fingerprint.product)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("\(Hex.u16(fingerprint.vendorID)) / \(Hex.u16(fingerprint.productID))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+            if let active = viewModel.activeProfile,
+               active.fingerprint.stableKey == fingerprint.stableKey
+            {
+                Text("Profile: \(active.displayName)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var deviceIcon: String {
+        let name = fingerprint.lowercaseProduct
+        if name.contains("cast") { return "mic" }
+        if name.contains("cloud") || name.contains("headset") { return "headphones" }
+        return "computermouse"
+    }
+
+    private var profileResolutionNotice: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Profile not active for this interface",
+                  systemImage: "exclamationmark.triangle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.orange)
+            Text("This device is detected, but the selected HID interface isn't the one MacGenuity controls (e.g. it's a secondary mouse interface). Pick the device again from the sidebar — the next probe will resolve a profile.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
+    }
+
+    private func noControlsNotice(profileName: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("No controls available", systemImage: "checkmark.seal")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text("\(profileName) is recognised but doesn't expose any controls MacGenuity can drive yet (lighting, DPI, etc.). The device shows up here so you can confirm detection — protocol support can be added by contributing a profile.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
+    }
+}
+
+// MARK: - Battery section
+
+private struct BatterySection: View {
+    let battery: BatteryState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Battery").font(.headline)
+            HStack(spacing: 8) {
+                Image(systemName: battery.isCharging ? "battery.100.bolt" : icon)
+                    .foregroundStyle(battery.isCharging ? .green : .primary)
+                Text("\(battery.percent)%")
+                    .font(.system(size: 13, weight: .medium))
+                    .monospacedDigit()
+                if battery.isCharging {
+                    Text("charging").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var icon: String {
+        switch battery.percent {
+        case 75...:    return "battery.100"
+        case 50..<75:  return "battery.75"
+        case 25..<50:  return "battery.50"
+        case 10..<25:  return "battery.25"
+        default:       return "battery.0"
+        }
+    }
+}
+
+// MARK: - Lighting (capability-gated)
+
+private struct LightingSection: View {
     @ObservedObject var viewModel: DeviceViewModel
     @ObservedObject var presetStore: PresetStore
 
@@ -85,41 +455,22 @@ private struct LightingPane: View {
     @State private var opacity: Double = 255
     @State private var speed: Double = 0
     @State private var includeHasteProbe: Bool = false
-    @State private var liveStream: Bool = false
+    /// Streaming colour to the device while sliders/picker move is the
+    /// expected interaction model now — the editor doubles as a live
+    /// preview, and the dedicated "Apply" button persists the final state.
+    @State private var liveStream: Bool = true
     @State private var presetName: String = ""
 
     @State private var streamTask: Task<Void, Never>?
 
     var body: some View {
-        // Device picker is ALWAYS visible at the top. If the active
-        // device doesn't support lighting (or no device is connected),
-        // we still show the selector so the user can pick a different
-        // device — without it, picking a microphone would lock them out
-        // of the entire pane.
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                DevicePickerRow(viewModel: viewModel)
-                Divider()
-
-                if isCapable {
-                    modePicker
-                    Divider()
-                    colorEditor
-                    Divider()
-                    slidersAndOptions
-                    Divider()
-                    applyRow
-                    Divider()
-                    presetsSection
-                } else {
-                    unsupportedNotice
-                        .frame(maxWidth: .infinity, minHeight: 240)
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+        VStack(alignment: .leading, spacing: 12) {
+            modePicker
+            colorEditor
+            slidersAndOptions
+            applyRow
+            presetsSection
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { hydrate() }
         .onReceive(NotificationCenter.default.publisher(for: .deviceDidChange)) { _ in
             hydrate()
@@ -128,23 +479,13 @@ private struct LightingPane: View {
         .onChange(of: opacity) { _ in scheduleLiveUpdate(color) }
     }
 
-    private var isCapable: Bool {
-        !viewModel.availableDevices.isEmpty
-            && viewModel.activeProfile?.capabilities.contains(.lighting) == true
-    }
-
     private var modePicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Mode").font(.headline)
-            // Target byte (0x00 logo / 0x10 wheel / 0x20 both) is part of
-            // the protocol but only `.logo` (0x00) is actually addressable
-            // on Pulsefire-class devices. The picker is hidden until a
-            // future profile advertises a `lightingMultiZone` capability.
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
                 Picker("Effect", selection: $effect) {
                     ForEach(LEDEffect.allCases) { Text($0.title).tag($0) }
                 }
-                .frame(maxWidth: 220)
+                .frame(maxWidth: 260)
                 Spacer()
             }
             if !effect.isVerified {
@@ -157,15 +498,15 @@ private struct LightingPane: View {
     }
 
     private var colorEditor: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Colour").font(.headline)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Colour").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
             InteractiveColorPicker(color: $color, presetStore: presetStore)
                 .frame(maxWidth: 460)
         }
     }
 
     private var slidersAndOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text("Brightness").frame(width: 90, alignment: .leading)
                 Slider(value: $brightness, in: 0...100, step: 1)
@@ -241,7 +582,7 @@ private struct LightingPane: View {
 
     private var presetsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Presets").font(.headline)
+            Text("Presets").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
             if presetStore.presets.isEmpty {
                 Text("Save the current configuration as a named preset to recall it later.")
                     .font(.system(size: 11))
@@ -256,7 +597,7 @@ private struct LightingPane: View {
                     }
                 }
                 .listStyle(.bordered)
-                .frame(minHeight: 120, maxHeight: 200)
+                .frame(minHeight: 100, maxHeight: 180)
             }
 
             HStack(spacing: 8) {
@@ -343,29 +684,6 @@ private struct LightingPane: View {
         }
     }
 
-    private var unsupportedNotice: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "lightbulb.slash")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
-            if viewModel.availableDevices.isEmpty {
-                Text("No HyperX devices connected")
-                    .font(.system(size: 13, weight: .medium))
-                Text("Plug in a HyperX device to enable lighting controls.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Lighting is not supported by the active device")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Text("Pick a different HyperX device above to control its lighting.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding()
-    }
-
     private func hydrate() {
         let s = viewModel.currentDeviceState.lighting
         effect = s.effect
@@ -376,9 +694,6 @@ private struct LightingPane: View {
         includeHasteProbe = s.includeHasteProbe
     }
 
-    /// Debounced live-update: cancels the previous frame and sends a new
-    /// one ~30 ms after the last colour or opacity change. Always sends
-    /// without haste probing so dragging never starts the 1 Hz keepalive.
     private func scheduleLiveUpdate(_ newColor: RGBColor) {
         guard liveStream else { return }
         streamTask?.cancel()
@@ -411,60 +726,31 @@ private struct LightingPane: View {
     }
 }
 
-// MARK: - DPI (NGENUITY-style multi-profile editor)
+// MARK: - DPI (capability-gated)
 
-private struct DPIPane: View {
+private struct DPISection: View {
     @ObservedObject var viewModel: DeviceViewModel
 
     @State private var levels: [DPILevel] = DeviceDPIState.default.levels
     @State private var activeProfile: Int = DeviceDPIState.default.activeProfile
 
     var body: some View {
-        // Same pattern as LightingPane: picker is always visible so the
-        // user can switch back from a non-DPI device without being locked
-        // into an empty pane.
-        VStack(alignment: .leading, spacing: 12) {
-            DevicePickerRow(viewModel: viewModel)
-            Divider()
-
-            if isCapable {
-                header
-                Divider()
-                levelsList
-                Divider()
-                footer
-            } else {
-                unsupportedNotice
-                    .frame(maxWidth: .infinity, minHeight: 220)
-            }
-
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Tap the radio button to choose which profile is active. Each level can be enabled, set 50–16 000 DPI, and given an indicator colour shown on the mouse when you cycle through with the on-mouse DPI button.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            levelsList
+            footer
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { hydrate() }
         .onReceive(NotificationCenter.default.publisher(for: .deviceDidChange)) { _ in
             hydrate()
         }
     }
 
-    private var isCapable: Bool {
-        !viewModel.availableDevices.isEmpty
-            && viewModel.activeProfile?.capabilities.contains(.dpiProfiles) == true
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("DPI Settings").font(.headline)
-            Text("Tap the radio button to choose which profile is active. Each level can be enabled, set 50–16 000 DPI, and given an indicator colour shown on the mouse when you cycle through with the on-mouse DPI button.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
     private var levelsList: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             ForEach(levels.indices, id: \.self) { idx in
                 levelRow(index: idx)
             }
@@ -486,9 +772,6 @@ private struct DPIPane: View {
         return HStack(spacing: 10) {
             Button {
                 activeProfile = level.index
-                // Live preview: switch the active DPI profile AND flash
-                // its indicator colour through the LED for ~1.5s so the
-                // user gets visual confirmation without persisting.
                 let pickedColor = levels[index].color
                 Task {
                     await viewModel.selectDPIProfile(level.index,
@@ -573,31 +856,7 @@ private struct DPIPane: View {
                 Label("Apply", systemImage: "scope")
             }
             .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.return)
         }
-    }
-
-    private var unsupportedNotice: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "scope")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
-            if viewModel.availableDevices.isEmpty {
-                Text("No HyperX devices connected")
-                    .font(.system(size: 13, weight: .medium))
-                Text("Plug in a HyperX device to configure DPI profiles.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("DPI control is not supported by the active device")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Text("Pick a different HyperX device above to configure DPI.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding()
     }
 
     private func hydrate() {
@@ -612,13 +871,330 @@ private struct DPIPane: View {
     }
 
     private func rgb(from color: Color) -> RGBColor {
-        // Convert through NSColor in sRGB for stable RGB extraction.
         let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor.black
         return RGBColor(
             red:   Int(round(ns.redComponent   * 255)),
             green: Int(round(ns.greenComponent * 255)),
             blue:  Int(round(ns.blueComponent  * 255))
         )
+    }
+}
+
+// MARK: - Collapsible section wrapper
+
+/// Generic disclosure container used by every per-device feature pane.
+/// Defaults to collapsed so a freshly-opened device shows just a list of
+/// chevrons — the user picks what they want to edit instead of being
+/// dumped into a wall of controls.
+private struct CollapsibleSection<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder let content: () -> Content
+
+    @State private var isExpanded: Bool = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            content()
+                .padding(.top, 8)
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .contentShape(Rectangle())
+                .onTapGesture { isExpanded.toggle() }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.06)))
+    }
+}
+
+// MARK: - Buttons (capability-gated)
+
+private struct ButtonsSection: View {
+    @ObservedObject var viewModel: DeviceViewModel
+    let fingerprint: DeviceFingerprint
+
+    /// Local edit copy. Hydrated from per-device store on appear and
+    /// device-switch; pushed back via `apply`.
+    @State private var assignments: [PhysicalButton: ButtonAction] = [:]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Re-bind side buttons, the wheel click and the on-mouse DPI button. Left and right click are intentionally not editable — losing them mid-session would lock you out of the editor.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(PhysicalButton.remappable, id: \.rawValue) { button in
+                buttonRow(button)
+            }
+
+            footer
+        }
+        .onAppear { hydrate() }
+        .onReceive(NotificationCenter.default.publisher(for: .deviceDidChange)) { _ in
+            hydrate()
+        }
+    }
+
+    private func buttonRow(_ button: PhysicalButton) -> some View {
+        let current = assignments[button] ?? ButtonAction.factoryDefault(for: button)
+        return HStack(spacing: 10) {
+            Image(systemName: button.iconName)
+                .frame(width: 22)
+                .foregroundStyle(.secondary)
+            Text(button.title)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 110, alignment: .leading)
+
+            Picker("", selection: bindingFor(button: button)) {
+                Section("Mouse") {
+                    ForEach(ButtonAction.MouseFunctionCode.allCases) { code in
+                        Text(code.title).tag(ButtonAction.mouseButton(code))
+                    }
+                }
+                Section("DPI") {
+                    Text("DPI cycle").tag(ButtonAction.dpiToggle)
+                }
+                Section("Media") {
+                    ForEach(ButtonAction.MediaFunctionCode.allCases) { code in
+                        Text("Media: \(code.title)").tag(ButtonAction.media(code))
+                    }
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: 220)
+
+            Spacer(minLength: 0)
+
+            // Inline restore-default chevron — quick way to undo a mistake
+            // without scrolling to the footer.
+            if current != ButtonAction.factoryDefault(for: button) {
+                Button {
+                    assignments[button] = ButtonAction.factoryDefault(for: button)
+                } label: {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.borderless)
+                .help("Restore factory default for this button")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var footer: some View {
+        HStack {
+            if let message = viewModel.lastControlMessage {
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Restore defaults") {
+                for button in PhysicalButton.allCases {
+                    assignments[button] = ButtonAction.factoryDefault(for: button)
+                }
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                let payload = PhysicalButton.allCases.map { button in
+                    ButtonAssignment(
+                        button: button,
+                        action: assignments[button] ?? ButtonAction.factoryDefault(for: button)
+                    )
+                }
+                Task { await viewModel.applyButtonAssignments(payload) }
+            } label: {
+                Label("Apply", systemImage: "checkmark.seal")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func bindingFor(button: PhysicalButton) -> Binding<ButtonAction> {
+        Binding<ButtonAction>(
+            get: { assignments[button] ?? ButtonAction.factoryDefault(for: button) },
+            set: { assignments[button] = $0 }
+        )
+    }
+
+    private func hydrate() {
+        let s = viewModel.currentDeviceState.buttons
+        var map: [PhysicalButton: ButtonAction] = [:]
+        for button in PhysicalButton.allCases {
+            map[button] = s.action(for: button)
+        }
+        assignments = map
+    }
+}
+
+// MARK: - Microphone detail
+
+private struct MicrophoneDetail: View {
+    let microphone: MicrophoneInfo
+    @ObservedObject var viewModel: DeviceViewModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                Divider()
+                controlsSection
+                propertiesSection
+                quadCastNotice
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mic")
+                .font(.system(size: 22))
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(microphone.displayName)
+                        .font(.system(size: 16, weight: .semibold))
+                    if microphone.isDefaultInput {
+                        Text("DEFAULT")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                if !microphone.manufacturer.isEmpty {
+                    Text(microphone.manufacturer)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    private var controlsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Audio controls").font(.headline)
+
+            // The toggle represents "microphone is live" — ON means the
+            // mic is picking up sound, OFF means muted. This mirrors the
+            // menu-bar tray toggle and inverts CoreAudio's `Mute` flag
+            // on the way in/out of the binding.
+            //
+            // The label width is fixed so the switch doesn't shift
+            // horizontally when the text flips between "Muted" (5 chars)
+            // and "Live" (4 chars) — the wider state defines the slot.
+            if let muted = microphone.isMuted {
+                Toggle(isOn: Binding(
+                    get: { !muted },
+                    set: { isLive in
+                        Task { await viewModel.setMicrophoneMute(!isLive, for: microphone) }
+                    }
+                )) {
+                    Label(muted ? "Muted" : "Live",
+                          systemImage: muted ? "mic.slash.fill" : "mic.fill")
+                        .foregroundStyle(muted ? Color.red : Color.primary)
+                        .frame(minWidth: 90, alignment: .leading)
+                }
+                .toggleStyle(.switch)
+            } else {
+                Label("Mute state not exposed by CoreAudio",
+                      systemImage: "mic.badge.xmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Volume slider. `volumePercent` is `nil` on mics that route
+            // gain through hardware only — show a note instead of a
+            // dead slider.
+            if let volume = microphone.volumePercent {
+                HStack(spacing: 8) {
+                    Image(systemName: "speaker.wave.1.fill")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    Slider(value: Binding(
+                        get: { Double(volume) },
+                        set: { newValue in
+                            Task {
+                                await viewModel.setMicrophoneVolume(
+                                    Int(newValue.rounded()), for: microphone
+                                )
+                            }
+                        }
+                    ), in: 0...100, step: 1)
+                    Text("\(volume)%")
+                        .font(.system(size: 11, design: .monospaced))
+                        .monospacedDigit()
+                        .frame(width: 38, alignment: .trailing)
+                }
+            } else {
+                Label("Volume controlled by hardware gain dial",
+                      systemImage: "dial.medium")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            if let message = viewModel.lastControlMessage {
+                Text(message)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.06)))
+    }
+
+    private var propertiesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Hardware info").font(.headline)
+            propertyRow(label: "UID", value: microphone.uid)
+            if let rate = microphone.sampleRate {
+                propertyRow(label: "Sample rate", value: "\(Int(rate)) Hz")
+            }
+            propertyRow(label: "Input streams", value: "\(microphone.inputStreamCount)")
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.06)))
+    }
+
+    @ViewBuilder
+    private var quadCastNotice: some View {
+        let name = microphone.displayName.lowercased()
+        if name.contains("quadcast") || name.contains("duocast") {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("RGB lighting & polar pattern — coming soon",
+                      systemImage: "sparkles")
+                    .font(.system(size: 12, weight: .medium))
+                Text("MacGenuity recognises the QuadCast / DuoCast family but doesn't drive its RGB lighting or polar pattern yet. The protocol is documented in the QuadcastRGB project and uses USB control transfers (HID feature reports) — adding it is a tracked enhancement.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.purple.opacity(0.08)))
+        }
+    }
+
+    private func propertyRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
     }
 }
 
@@ -665,68 +1241,6 @@ private struct ProfilesPane: View {
     }
 }
 
-// MARK: - Device picker (shared)
-
-/// Lets the user pin a specific HyperX device when more than one is
-/// attached. Default behaviour (no explicit selection) auto-picks the
-/// highest-scoring device.
-private struct DevicePickerRow: View {
-    @ObservedObject var viewModel: DeviceViewModel
-
-    /// What the picker shows. Driven by the user's last *choice*, not by
-    /// whether a profile resolved it — picking a microphone keeps the
-    /// label visible even though no `DeviceProfile` matches a SoloCast.
-    private var selectionKey: String {
-        viewModel.selectedDeviceKey
-            ?? viewModel.activeProfile?.fingerprint.stableKey
-            ?? viewModel.availableDevices.first?.stableKey
-            ?? ""
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "computermouse")
-                .foregroundStyle(.secondary)
-            Text("Device")
-                .frame(width: 60, alignment: .leading)
-
-            Picker("", selection: Binding<String>(
-                get: { selectionKey },
-                set: { newKey in
-                    guard let target = viewModel.availableDevices
-                        .first(where: { $0.stableKey == newKey }) else { return }
-                    Task { await viewModel.setActiveDevice(target) }
-                }
-            )) {
-                if viewModel.availableDevices.isEmpty {
-                    Text("No HyperX devices").tag("")
-                } else {
-                    ForEach(viewModel.availableDevices, id: \.stableKey) { fp in
-                        Text(deviceLabel(fp)).tag(fp.stableKey)
-                    }
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity)
-            .disabled(viewModel.availableDevices.isEmpty)
-
-            Button {
-                Task { await viewModel.refresh() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .help("Re-scan connected devices")
-        }
-    }
-
-    private func deviceLabel(_ fp: DeviceFingerprint) -> String {
-        let name = fp.product.isEmpty ? "Unnamed HyperX" : fp.product
-        return "\(name)  (\(Hex.u16(fp.vendorID))/\(Hex.u16(fp.productID)))"
-    }
-}
-
 // MARK: - About
 
 private struct AboutPane: View {
@@ -753,33 +1267,27 @@ private struct AboutPane: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.blue)
 
-            // --- SUPPORT BLOCK ---
             VStack(alignment: .leading, spacing: 10) {
                 Divider()
                 Text("Support development")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                DonationRow(
-                    title: "USDT Polygon (PoS)",
-                    value: config.usdt_polygon,
-                    scheme: "ethereum"
-                )
-                DonationRow(
-                    title: "USDT TRON (TRC20)",
-                    value: config.usdt_trc20,
-                    scheme: "tron"
-                )
-                DonationRow(
-                    title: "Bitcoin",
-                    value: config.btc,
-                    scheme: "bitcoin"
-                )
-                // External page
-//                 Link("All methods (cards, etc.)",
-//                      destination: URL(string: "https://your-donation-page")!)
-//                     .font(.system(size: 12))
+                // Skip rows for addresses that didn't load (e.g. when
+                // donations.json is missing from the bundle). Empty
+                // strings would render meaningless "...0" placeholders.
+                if !config.usdt_polygon.isEmpty {
+                    DonationRow(title: "USDT Polygon (PoS)",
+                                value: config.usdt_polygon, scheme: "ethereum")
+                }
+                if !config.usdt_trc20.isEmpty {
+                    DonationRow(title: "USDT TRON (TRC20)",
+                                value: config.usdt_trc20, scheme: "tron")
+                }
+                if !config.btc.isEmpty {
+                    DonationRow(title: "Bitcoin",
+                                value: config.btc, scheme: "bitcoin")
+                }
             }
-            // ----------------------
             Spacer()
             Text("MIT License")
                 .font(.system(size: 10))
@@ -846,8 +1354,7 @@ private struct DonationRow: View {
 
             Spacer()
 
-            // Open in wallet or fallback to explorer
-            if let scheme {
+            if scheme != nil {
                 Button {
                     open()
                 } label: {
@@ -857,7 +1364,6 @@ private struct DonationRow: View {
                 .help("Open in wallet")
             }
 
-            // Copy button
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(value, forType: .string)

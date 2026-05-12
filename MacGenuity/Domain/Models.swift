@@ -183,6 +183,141 @@ enum HIDAccessState: Equatable {
     case unknown
 }
 
+// MARK: - Button assignments
+
+/// Physical mouse buttons in the order NGenuity2 expects on byte index 1
+/// of the `0xD4` packet. Values are the wire bytes — don't reorder.
+///
+/// Protocol reference: santeri3700/hyperx_pulsefire_dart_reverse_engineering
+/// /protocol/index.md#set-button-assignment
+enum PhysicalButton: Int, CaseIterable, Identifiable, Codable {
+    case left        = 0x00
+    case right       = 0x01
+    case middle      = 0x02
+    case sideForward = 0x03
+    case sideBack    = 0x04
+    case dpiToggle   = 0x05
+
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .left:        return "Left click"
+        case .right:       return "Right click"
+        case .middle:      return "Middle click"
+        case .sideForward: return "Side forward"
+        case .sideBack:    return "Side back"
+        case .dpiToggle:   return "DPI toggle"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .left:        return "cursorarrow.click"
+        case .right:       return "cursorarrow.click.2"
+        case .middle:      return "circle.dotted"
+        case .sideForward: return "arrow.forward.circle"
+        case .sideBack:    return "arrow.backward.circle"
+        case .dpiToggle:   return "scope"
+        }
+    }
+
+    /// Buttons NGenuity allows the user to remap. Left/Right are excluded
+    /// because changing them mid-session is destructive — you'd lose the
+    /// ability to click "Apply" to revert.
+    static let remappable: [PhysicalButton] = [
+        .middle, .sideForward, .sideBack, .dpiToggle
+    ]
+}
+
+/// Concrete bound action. The `(type, code)` pair maps directly to bytes
+/// `[2]` and `[4]` of the `0xD4` packet — see `assignmentTypeByte` /
+/// `code` getters.
+enum ButtonAction: Codable, Equatable, Hashable {
+    /// USB HID Button Page (0x09): 1=Left, 2=Right, 3=Middle, 4=Forward, 5=Back
+    case mouseButton(MouseFunctionCode)
+    /// Hardware DPI cycling. `0x07` assignment type, code `0x08`.
+    case dpiToggle
+    /// Non-standard HyperX media function table (0x03 type byte).
+    case media(MediaFunctionCode)
+
+    enum MouseFunctionCode: Int, CaseIterable, Identifiable, Codable {
+        case left = 0x01, right = 0x02, middle = 0x03, forward = 0x04, back = 0x05
+        var id: Int { rawValue }
+        var title: String {
+            switch self {
+            case .left:    return "Left click"
+            case .right:   return "Right click"
+            case .middle:  return "Middle click"
+            case .forward: return "Forward"
+            case .back:    return "Back"
+            }
+        }
+    }
+
+    enum MediaFunctionCode: Int, CaseIterable, Identifiable, Codable {
+        case playPause = 0x00, stop = 0x01, previous = 0x02, next = 0x03
+        case mute = 0x04, volumeDown = 0x05, volumeUp = 0x06
+        var id: Int { rawValue }
+        var title: String {
+            switch self {
+            case .playPause:  return "Play / pause"
+            case .stop:       return "Stop"
+            case .previous:   return "Previous track"
+            case .next:       return "Next track"
+            case .mute:       return "Mute"
+            case .volumeDown: return "Volume down"
+            case .volumeUp:   return "Volume up"
+            }
+        }
+    }
+
+    /// Byte `[2]` of the `0xD4` packet.
+    var assignmentTypeByte: UInt8 {
+        switch self {
+        case .mouseButton: return 0x01
+        case .media:       return 0x03
+        case .dpiToggle:   return 0x07
+        }
+    }
+
+    /// Byte `[4]` of the `0xD4` packet.
+    var code: UInt8 {
+        switch self {
+        case .mouseButton(let c): return UInt8(c.rawValue)
+        case .media(let c):       return UInt8(c.rawValue)
+        case .dpiToggle:          return 0x08
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .mouseButton(let c): return c.title
+        case .media(let c):       return "Media: \(c.title)"
+        case .dpiToggle:          return "DPI cycle"
+        }
+    }
+
+    /// What a freshly-flashed device reports for each physical button.
+    /// We seed the editor with these so the user sees factory defaults
+    /// before they change anything.
+    static func factoryDefault(for button: PhysicalButton) -> ButtonAction {
+        switch button {
+        case .left:        return .mouseButton(.left)
+        case .right:       return .mouseButton(.right)
+        case .middle:      return .mouseButton(.middle)
+        case .sideForward: return .mouseButton(.forward)
+        case .sideBack:    return .mouseButton(.back)
+        case .dpiToggle:   return .dpiToggle
+        }
+    }
+}
+
+struct ButtonAssignment: Codable, Equatable, Identifiable, Hashable {
+    var id: Int { button.rawValue }
+    let button: PhysicalButton
+    var action: ButtonAction
+}
+
 /// Aggregated mouse-side state observed by the view model.
 enum MouseStatus: Equatable {
     case unknown

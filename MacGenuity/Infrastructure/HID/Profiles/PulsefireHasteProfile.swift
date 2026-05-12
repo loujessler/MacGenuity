@@ -15,7 +15,7 @@ final class PulsefireHasteProfile: DeviceProfile {
     let displayName = "HyperX Pulsefire Haste"
     let author = "MacGenuity"
 
-    let capabilities: DeviceCapabilities = [.info, .battery, .lighting, .dpiProfiles, .hasteDirect]
+    let capabilities: DeviceCapabilities = [.info, .battery, .lighting, .dpiProfiles, .hasteDirect, .buttons]
 
     private let fallback = DefaultHyperXProfile()
 
@@ -48,4 +48,7 @@ final class PulsefireHasteProfile: DeviceProfile {
     func hasteSetupPacket() -> ProfilePacket?  { fallback.hasteSetupPacket() }
     func hasteDirectFrame(_ c: RGBColor) -> ProfilePacket? { fallback.hasteDirectFrame(c) }
     func commitPacket() -> ProfilePacket? { fallback.commitPacket() }
+    func buttonAssignmentPackets(_ a: ButtonAssignment) -> [ProfilePacket] {
+        fallback.buttonAssignmentPackets(a)
+    }
 }

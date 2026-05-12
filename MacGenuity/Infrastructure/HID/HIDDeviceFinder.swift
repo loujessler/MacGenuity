@@ -56,6 +56,9 @@ enum HIDDeviceFinder {
                 || lower.contains("ngenuity")
                 || lower.contains("cloud")     // headsets with USB control HID
                 || lower.contains("alloy")     // keyboards
+                || lower.contains("quadcast")  // microphones
+                || lower.contains("duocast")
+                || lower.contains("solocast")
             guard plausible else { return nil }
 
             return HIDDeviceCandidate(device: dev, fingerprint: fingerprint)

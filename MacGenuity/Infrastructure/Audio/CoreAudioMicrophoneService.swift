@@ -5,15 +5,55 @@
 //  Enumerates HyperX-branded input devices via CoreAudio.
 //  CoreAudio types stay confined to this file.
 //
+//  Push notifications:
+//    The service installs CoreAudio property listeners on the system
+//    device list AND on each tracked HyperX mic's `Mute` / `Volume`
+//    properties. Whenever any of those flip — including via the
+//    on-device tap-to-mute pad of a QuadCast / SoloCast — the service
+//    posts `Notification.Name.microphoneStateChanged` on the main
+//    queue. The ViewModel subscribes and triggers an immediate
+//    `refresh()` so the UI reflects hardware changes without waiting
+//    for the next 60-second poll tick.
+//
 
 import CoreAudio
 import Foundation
 
+extension Notification.Name {
+    /// Fired by `CoreAudioMicrophoneService` when CoreAudio reports a
+    /// change on any tracked HyperX mic (device list / mute / volume).
+    /// Always delivered on the main queue.
+    static let microphoneStateChanged = Notification.Name("MacGenuity.microphoneStateChanged")
+}
+
 final class CoreAudioMicrophoneService: AudioService {
     private let logger: LoggerType
 
+    /// One listener block per `(device, address)` so we can remove the
+    /// exact pair when the device disconnects. CoreAudio's remove API
+    /// requires the same block reference that was passed to add.
+    private struct InstalledListener {
+        let address: AudioObjectPropertyAddress
+        let block: AudioObjectPropertyListenerBlock
+    }
+
+    /// `kAudioHardwarePropertyDevices` listener — fires when devices
+    /// are plugged / unplugged.
+    private var deviceListListener: InstalledListener?
+
+    /// Per-device listeners (mute + volume). Keyed by AudioObjectID so
+    /// we can deregister precisely when that device vanishes.
+    private var deviceListeners: [AudioObjectID: [InstalledListener]] = [:]
+
     init(logger: LoggerType = FileLogger.shared) {
         self.logger = logger
+        installDeviceListListener()
+        // Install per-device listeners for whatever's already attached.
+        refreshDeviceListeners()
+    }
+
+    deinit {
+        removeAllListeners()
     }
 
     func connectedMicrophones() -> [MicrophoneInfo] {
@@ -52,6 +92,195 @@ final class CoreAudioMicrophoneService: AudioService {
             logger.debug(.audio, "name='\(mic.name)' streams=\(mic.inputStreamCount) sampleRate=\(mic.sampleRate ?? 0) muted=\(mic.isMuted.map(String.init) ?? "?") default=\(mic.isDefaultInput)")
         }
         return microphones
+    }
+
+    // MARK: - Property listeners (push updates)
+
+    /// Watches `kAudioHardwarePropertyDevices` on the system object so
+    /// we know when a HyperX mic arrives / leaves. On every change we
+    /// reconcile per-device listeners and notify the ViewModel.
+    private func installDeviceListListener() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            self.refreshDeviceListeners()
+            self.postChange()
+        }
+        let result = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.main,
+            block
+        )
+        if result == noErr {
+            deviceListListener = InstalledListener(address: address, block: block)
+            logger.info(.audio, "installed device-list property listener")
+        } else {
+            logger.error(.audio, "failed to install device-list listener result=\(result)")
+        }
+    }
+
+    /// Diff `trackedDevices` against the currently-attached HyperX mics
+    /// and add/remove per-device listeners accordingly.
+    private func refreshDeviceListeners() {
+        let current = Set(connectedMicrophones().map { $0.id })
+        let tracked = Set(deviceListeners.keys)
+
+        for id in tracked.subtracting(current) {
+            removeListeners(from: id)
+        }
+        for id in current.subtracting(tracked) {
+            installListeners(on: id)
+        }
+    }
+
+    /// Listen on mute + volume across both `Main` and legacy-element-1
+    /// channels — same pair the read path probes, so we capture changes
+    /// no matter which channel CoreAudio exposes for this device.
+    private func installListeners(on device: AudioObjectID) {
+        let selectors: [AudioObjectPropertySelector] = [
+            kAudioDevicePropertyMute,
+            kAudioDevicePropertyVolumeScalar
+        ]
+        let elements: [AudioObjectPropertyElement] = [
+            kAudioObjectPropertyElementMain,
+            AudioObjectPropertyElement(1)
+        ]
+
+        var installed: [InstalledListener] = []
+        for selector in selectors {
+            for element in elements {
+                var address = AudioObjectPropertyAddress(
+                    mSelector: selector,
+                    mScope: kAudioDevicePropertyScopeInput,
+                    mElement: element
+                )
+                guard AudioObjectHasProperty(device, &address) else { continue }
+
+                let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                    self?.postChange()
+                }
+                let result = AudioObjectAddPropertyListenerBlock(
+                    device, &address, DispatchQueue.main, block
+                )
+                if result == noErr {
+                    installed.append(InstalledListener(address: address, block: block))
+                } else {
+                    logger.debug(.audio, "listener add failed device=\(device) sel=\(selector) result=\(result)")
+                }
+            }
+        }
+        if !installed.isEmpty {
+            deviceListeners[device] = installed
+            logger.info(.audio, "installed \(installed.count) listener(s) on device=\(device)")
+        }
+    }
+
+    private func removeListeners(from device: AudioObjectID) {
+        guard let installed = deviceListeners[device] else { return }
+        for listener in installed {
+            var address = listener.address
+            AudioObjectRemovePropertyListenerBlock(
+                device, &address, DispatchQueue.main, listener.block
+            )
+        }
+        deviceListeners.removeValue(forKey: device)
+    }
+
+    private func removeAllListeners() {
+        for device in Array(deviceListeners.keys) {
+            removeListeners(from: device)
+        }
+        if let listener = deviceListListener {
+            var address = listener.address
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                DispatchQueue.main,
+                listener.block
+            )
+            deviceListListener = nil
+        }
+    }
+
+    /// Notifies subscribers on the main queue. Property-listener blocks
+    /// already run on `DispatchQueue.main` (we requested that queue when
+    /// installing), so no extra hop is required.
+    private func postChange() {
+        NotificationCenter.default.post(name: .microphoneStateChanged, object: nil)
+    }
+
+    // MARK: - Setters
+
+    @discardableResult
+    func setMicrophoneMute(_ muted: Bool, deviceID: UInt32) -> Bool {
+        let value: UInt32 = muted ? 1 : 0
+        let written = writeInputProperty(kAudioDevicePropertyMute,
+                                         value: value, for: deviceID)
+        logger.info(.audio, "setMicrophoneMute(\(muted)) device=\(deviceID) ok=\(written)")
+        return written
+    }
+
+    @discardableResult
+    func setMicrophoneVolume(_ scalar: Float, deviceID: UInt32) -> Bool {
+        let clamped = max(0, min(1, scalar))
+        let written = writeInputScalar(kAudioDevicePropertyVolumeScalar,
+                                       value: clamped, for: deviceID)
+        logger.info(.audio, "setMicrophoneVolume(\(clamped)) device=\(deviceID) ok=\(written)")
+        return written
+    }
+
+    private func writeInputProperty(_ selector: AudioObjectPropertySelector,
+                                    value: UInt32,
+                                    for device: AudioObjectID) -> Bool
+    {
+        // Try both `Main` (modern) and element 1 (legacy first-channel)
+        // — same as the read path. CoreAudio rejects writes against the
+        // wrong element with `kAudioHardwareUnknownPropertyError`.
+        for element in [kAudioObjectPropertyElementMain, 1] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: AudioObjectPropertyElement(element)
+            )
+            guard AudioObjectHasProperty(device, &address) else { continue }
+            var isSettable: DarwinBoolean = false
+            guard AudioObjectIsPropertySettable(device, &address, &isSettable) == noErr,
+                  isSettable.boolValue else { continue }
+            var local = value
+            let size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectSetPropertyData(device, &address, 0, nil, size, &local) == noErr {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func writeInputScalar(_ selector: AudioObjectPropertySelector,
+                                  value: Float,
+                                  for device: AudioObjectID) -> Bool
+    {
+        for element in [kAudioObjectPropertyElementMain, 1] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: AudioObjectPropertyElement(element)
+            )
+            guard AudioObjectHasProperty(device, &address) else { continue }
+            var isSettable: DarwinBoolean = false
+            guard AudioObjectIsPropertySettable(device, &address, &isSettable) == noErr,
+                  isSettable.boolValue else { continue }
+            var local = Float32(value)
+            let size = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectSetPropertyData(device, &address, 0, nil, size, &local) == noErr {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Private
