@@ -81,8 +81,8 @@ final class FileLogger: LoggerType, ObservableObject {
     /// `objectWillChange` per write.
     @Published private(set) var tail: [LogEntry] = []
 
-    private let queue = DispatchQueue(label: "com.local.macgenuity.logger", qos: .utility)
-    private let osLog = OSLog(subsystem: "com.local.macgenuity", category: "app")
+    private let queue = DispatchQueue(label: "io.github.loujessler.macgenuity.logger", qos: .utility)
+    private let osLog = OSLog(subsystem: "io.github.loujessler.macgenuity", category: "app")
     private let maxBytes: UInt64 = 5 * 1024 * 1024
     private let pruneToBytes: Int = 4 * 1024 * 1024
     private let tailCapacity = 500

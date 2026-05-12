@@ -7,7 +7,7 @@
     <key>CFBundleExecutable</key>
     <string>MacGenuity</string>
     <key>CFBundleIdentifier</key>
-    <string>com.local.macgenuity</string>
+    <string>io.github.loujessler.macgenuity</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -27,6 +27,6 @@
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026. Released under the MIT License.</string>
     <key>NSInputMonitoringUsageDescription</key>
-    <string>MacGenuity reads battery and device information from your HyperX mouse over USB HID.</string>
+    <string>MacGenuity uses Input Monitoring to read and control HyperX peripherals over USB HID: battery level, firmware info, RGB lighting, DPI profiles, and button mappings on supported mice. No keystrokes are recorded.</string>
 </dict>
 </plist>

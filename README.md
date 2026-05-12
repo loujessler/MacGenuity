@@ -11,7 +11,7 @@
 
 # MacGenuity
 
-A lightweight macOS menu bar application for monitoring HyperX wireless devices (mouse and USB microphone).
+A lightweight macOS menu-bar application for monitoring and controlling HyperX peripherals — wireless mice, USB microphones, and headset families.
 
 Built with pure Swift and SwiftUI. No third-party dependencies. Distributed as a single self-contained `.app`.
 
@@ -19,47 +19,64 @@ Built with pure Swift and SwiftUI. No third-party dependencies. Distributed as a
 
 ## Overview
 
-MacGenuity surfaces real-time device state from the macOS menu bar without the vendor's NGenuity software or any background daemons.
+MacGenuity surfaces real-time device state and lets you change lighting, DPI, button mappings and microphone state from the macOS menu bar — without HP's NGenuity software or any background daemons.
 
-The project is intentionally a low-level, dependency-free macOS utility. It talks to the device through IOKit HID directly, and to the audio subsystem through CoreAudio.
+The project is intentionally a low-level, dependency-free macOS utility. It talks to the mouse through IOKit HID directly, and to the audio subsystem through CoreAudio.
 
 ---
 
 ## Features
 
+### Devices sidebar (BetterDisplay-style)
+
+The Settings window's **Devices** tab lists every attached HyperX peripheral on the left. The detail pane on the right shows ONLY the controls that device actually supports — lighting and DPI for mice, audio controls for microphones. There is no top-level "Lighting" or "DPI" tab any more; those editors live inside the device they belong to.
+
 ### Mouse monitoring
 
 - Battery percent + charging state in the menu bar
-- Battery-history sparkline (last ~10 hours)
-- Battery trend indicator (charging / discharging / stable / rising)
+- Battery-history sparkline (last ~10 hours) and trend indicator
 - Device name, firmware version, VID/PID
 - Configurable poll interval and low-battery threshold
 - Low-battery system notification (UNUserNotificationCenter, throttled)
 
-### Microphone monitoring (CoreAudio)
-
-- Connected HyperX input devices
-- Manufacturer, sample rate, stream count
-- Gain / mute (when exposed by macOS)
-
-### Lighting
+### Mouse lighting (Pulsefire family)
 
 - Interactive RGB picker with coloured-track sliders, hex input, live preview
-- Recent-colours strip (persisted across launches)
+- "Live update" streams colour to the device while sliders move (on by default)
 - Named lighting presets — save current config, recall in one click
-- LED target / effect / brightness / speed controls
+- LED target / effect / brightness / speed / opacity controls
 - Haste-family direct-colour probe with throttled (1 Hz) keepalive
 
-### DPI
+### Mouse DPI
 
-- Per-profile DPI value (50–16 000, 50-step rounded)
-- Active profile selection (1–4) with on-mouse colour indicator
+- Per-profile DPI value (50 – 16 000, 50-step rounded)
+- Up to 5 profiles with per-level enable bitmap and indicator colour
+- NGenuity-style batch apply: writes every level + selects active in one `D3` packet flow, committed with `DE 03 00`
+
+### Mouse button remapping (`0xD4` protocol)
+
+- Re-bind middle / side / DPI buttons to mouse functions, media keys, or DPI cycle
+- Per-device state persisted between sessions; restore-defaults per-row or batch
+- Survives reboot via the same commit pattern as DPI
+
+### Microphone monitoring & control (CoreAudio)
+
+- Auto-detects HyperX QuadCast / QuadCast S / QuadCast 2 / QuadCast 2S / DuoCast / SoloCast
+- Mute / unmute toggle directly in the menu-bar tray
+- Volume slider, sample rate, stream count, default-input badge in the detail pane
+- **Push-based state sync** via `AudioObjectAddPropertyListenerBlock` — physical tap-to-mute on the device flips the in-app toggle within ~50 ms, no polling delay
+
+### Branded menu-bar icon
+
+- Custom mark from `Resources/MenuBarIcon.pdf` (preferred) or `MenuBarIcon.png`
+- Loaded as a template `NSImage` so macOS tints it for dark / light menu bars
+- Built-in `HyperXMark` template fallback if no asset is shipped
 
 ### Extensible device profiles
 
-- `DeviceProfile` protocol with capability flags — UI hides controls a profile doesn't support.
-- Score-based registry picks the best profile per discovered device.
-- `DefaultHyperXProfile` covers the NGenuity2 family; `PulsefireHasteProfile` is a worked example.
+- `DeviceProfile` protocol with capability flags — UI hides controls a profile doesn't support
+- Score-based registry picks the best profile per discovered device
+- Shipped profiles: `DefaultHyperXProfile` (NGenuity2 / Pulsefire family), `PulsefireHasteProfile` (worked example), `QuadCastProfile` (detection-only for the Cast family)
 - Contributors add their device by copying a profile, tweaking packet bytes, and registering it. See [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md).
 
 ### Diagnostics window
@@ -73,14 +90,15 @@ A dedicated window for contributors and curious users:
 
 ### Settings window
 
-Native macOS Settings scene (⌘,) with separate panes for **General**, **Lighting** (preset management), **Profiles** (registered profile listing), and **About**.
+Native macOS Settings scene (⌘,) with separate panes for **General**, **Devices** (sidebar + per-device editors), **Profiles** (registered profile listing), and **About**.
 
 ### System integration
 
 - Launch at login via `SMAppService`
-- Native macOS Input Monitoring prompt with a *Recheck* button for stale TCC entries
+- First-launch Input Monitoring prompt triggered automatically via `IOHIDRequestAccess`
+- One-click "Relaunch" button to pick up freshly-granted TCC permission
 - Structured file logging with rotation (5 MB cap)
-- `os_log` mirroring (subsystem `com.local.macgenuity`)
+- `os_log` mirroring (subsystem `io.github.loujessler.macgenuity`)
 
 ---
 
@@ -91,16 +109,20 @@ The codebase is organized into clearly bounded layers. UI never touches IOKit or
 ```
 MacGenuity/
 ├── App/
-│   └── MacGenuityApp.swift              Scene wiring (MenuBarExtra + Settings + Diagnostics windows)
+│   └── MacGenuityApp.swift                 Scene wiring (MenuBarExtra + Settings + Diagnostics)
 ├── Domain/
-│   ├── Models.swift                        Pure value types (Codable RGBColor, MouseInfo, …)
+│   ├── Models.swift                        Pure value types (RGBColor, MouseInfo, ButtonAssignment, …)
 │   ├── Errors.swift                        DeviceError / HIDError / PermissionError
 │   ├── Services.swift                      DeviceService / AudioService protocols
-│   └── DeviceProfile.swift                 Public extension point for community-authored profiles
+│   ├── DeviceProfile.swift                 Public extension point for community-authored profiles
+│   ├── ConfigurableDevice.swift            Unified HID + audio device type for the sidebar
+│   └── Config/
+│       └── DonationConfig.swift            Decodes Resources/donations.json (graceful fallback)
 ├── Features/
 │   ├── MenuBar/
-│   │   ├── MenuBarLabel.swift              Tray icon + percent
-│   │   └── MenuContent.swift               Dropdown content
+│   │   ├── MenuBarLabel.swift              Tray icon + battery / HyperX mark
+│   │   ├── MenuContent.swift               Dropdown content (mic mute toggles, permission flow, …)
+│   │   └── HyperXMark.swift                Branded template NSImage with PDF/PNG loader
 │   ├── Lighting/
 │   │   ├── InteractiveColorPicker.swift    RGB sliders + hex + recent colours
 │   │   └── PresetsView.swift               Named lighting preset save / apply / rename / delete
@@ -109,7 +131,7 @@ MacGenuity/
 │   ├── Diagnostics/
 │   │   └── DiagnosticsWindow.swift         Candidate list + raw sender + live log tail
 │   └── Settings/
-│       └── SettingsScene.swift             General / Lighting / Profiles / About panes
+│       └── SettingsScene.swift             General / Devices / Profiles / About panes
 ├── Infrastructure/
 │   ├── HID/
 │   │   ├── HIDPermission.swift             IOHIDCheckAccess / IOHIDRequestAccess
@@ -119,15 +141,18 @@ MacGenuity/
 │   │   └── Profiles/
 │   │       ├── PacketUtils.swift           Helpers (build, parse, validate)
 │   │       ├── ProfileRegistry.swift       Score-based device → profile resolution
-│   │       ├── DefaultHyperXProfile.swift  NGenuity2 reference implementation
+│   │       ├── DefaultHyperXProfile.swift  NGenuity2 reference implementation (lighting / DPI / buttons)
 │   │       ├── PulsefireHasteProfile.swift Worked example for new contributors
+│   │       ├── QuadCastProfile.swift       Cast-family detection (QuadCast / DuoCast / SoloCast)
 │   │       └── PROFILES.md                 Step-by-step authoring guide
 │   ├── Audio/
-│   │   └── CoreAudioMicrophoneService.swift
+│   │   └── CoreAudioMicrophoneService.swift  CoreAudio enumeration + property listeners + setters
 │   └── System/
 │       ├── AppSettings.swift               UserDefaults + SMAppService
 │       ├── BatteryHistory.swift            Persistent rolling timeline
 │       ├── PresetStore.swift               Named lighting presets + recent colours
+│       ├── DeviceStateStore.swift          Per-device lighting / DPI / button assignments
+│       ├── DockPolicyManager.swift         LSUIElement-aware Dock-icon policy
 │       └── Notifier.swift                  Low-battery system notifications
 ├── Shared/
 │   ├── Logger.swift                        Levelled logger + rotating file + tail ring buffer
@@ -135,7 +160,10 @@ MacGenuity/
 ├── ViewModels/
 │   └── DeviceViewModel.swift               @MainActor; the view model SwiftUI observes
 └── Resources/
-    └── Info.plist
+    ├── Info.plist
+    ├── donations.json
+    ├── AppIcon.png         (optional — 1024×1024, auto-compiled into AppIcon.icns at build time)
+    └── MenuBarIcon.pdf     (optional — vector template for the tray icon)
 ```
 
 ### Concurrency model
@@ -149,7 +177,7 @@ MacGenuity/
 
 The app uses `IOHIDCheckAccess` to determine the current Input Monitoring state and `IOHIDRequestAccess` to politely prompt for it. It will never call `IOHIDDeviceOpen` while access is denied — that previously caused tight TCC retry loops and `TCC deny IOHIDDeviceOpen` log spam.
 
-When permission is missing the menu shows a "Permission" section with a *Grant access* button (triggers the system prompt) and a fallback button that opens the Input Monitoring pane in System Settings.
+When permission is missing the menu shows a "Permission" section with **System Settings** (opens the Input Monitoring pane) and **Relaunch** (quits and immediately re-opens the app — required because macOS caches per-process TCC state and a running app can't see a freshly-granted permission until it restarts).
 
 ### HID layer hardening
 
@@ -172,7 +200,29 @@ xcode-select --install
 open build/MacGenuity.app
 ```
 
-The build script auto-detects Apple Silicon vs. Intel, ad-hoc signs the bundle, and writes the result to `build/MacGenuity.app`.
+The build script:
+
+- Auto-detects Apple Silicon vs. Intel (`arm64-apple-macos13` / `x86_64-apple-macos13`).
+- Picks a signing identity in priority order: `HYPERX_SIGN_IDENTITY` env → `"MacGenuity Dev"` self-signed → first `"Apple Development:"` cert → ad-hoc fallback.
+- Adds the `com.apple.security.get-task-allow` entitlement for **development** certs so `lldb` can attach; strips it for Developer ID certs to keep the build notarization-eligible.
+- Optionally bundles a custom menu-bar icon (`Resources/MenuBarIcon.pdf|png`) and app icon (`Resources/AppIcon.icns` or `AppIcon.png`, auto-compiled through `sips`+`iconutil`).
+
+Writes the result to `build/MacGenuity.app`.
+
+### Distribution build
+
+For a notarization-ready Developer ID build:
+
+```bash
+HYPERX_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+HYPERX_ALLOW_DEBUG=0 \
+./build.sh
+
+# Wrap and submit
+cd build && ditto -c -k --keepParent MacGenuity.app MacGenuity.zip
+xcrun notarytool submit MacGenuity.zip --keychain-profile AC_PROFILE --wait
+xcrun stapler staple MacGenuity.app
+```
 
 To install:
 
@@ -192,21 +242,28 @@ cp -R build/MacGenuity.app /Applications/
 
 ## TCC and code signing
 
-macOS binds Input Monitoring permission to the **cdhash** (signing hash) of the binary, not its file path. Ad-hoc signing (`codesign --sign -`) recomputes the cdhash on every build, so a previously-granted toggle in System Settings can show "ON" while `IOHIDRequestAccess` still returns `denied`. The app surfaces this with a permission section in the menu and a *Recheck* button.
+macOS binds Input Monitoring permission to the **cdhash** (signing hash) of the binary, not its file path or bundle identifier. Ad-hoc signing (`codesign --sign -`) recomputes the cdhash on every build, so a previously-granted toggle in System Settings can show "ON" while `IOHIDRequestAccess` still returns `denied`. The menu's permission section explains the situation and offers a **Relaunch** button — required because macOS caches per-process TCC state and a running app can't see a freshly-granted permission until it restarts.
 
-To make grants survive rebuilds during development, use a stable self-signed identity:
+To make grants survive rebuilds during development, use a stable signing identity. `build.sh` auto-detects, in this order:
+
+1. `HYPERX_SIGN_IDENTITY` env var (explicit override).
+2. A self-signed identity named `MacGenuity Dev` in the login keychain.
+3. The first available `Apple Development:` cert (gives a stable cdhash).
+4. Ad-hoc fallback (cdhash changes every build).
+
+To create a self-signed identity:
 
 1. Open *Keychain Access* → menu bar → *Certificate Assistant* → *Create a Certificate…*
 2. Name `MacGenuity Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**.
 3. Trust the cert in your login keychain.
-4. Rebuild: `build.sh` will pick it up automatically. (Override with `HYPERX_SIGN_IDENTITY=...` for a Developer ID.)
+4. Rebuild: `build.sh` will pick it up automatically.
 
 If a stale grant has to be reset:
 
 ```bash
-tccutil reset ListenEvent com.local.macgenuity
+tccutil reset ListenEvent io.github.loujessler.macgenuity
 # Then remove MacGenuity from System Settings → Privacy & Security
-# → Input Monitoring (− button), relaunch the app, and click "Grant access".
+# → Input Monitoring (− button), relaunch the app, accept the prompt.
 ```
 
 ---
@@ -215,7 +272,22 @@ tccutil reset ListenEvent com.local.macgenuity
 
 Log file: `~/Library/Logs/MacGenuity/MacGenuity.log`. Rotates at 5 MB.
 
-Levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, scoped by channel (`app`, `hid`, `audio`, `settings`, `ui`). Output is also mirrored to `os_log` and shows up in Console.app under subsystem `com.local.macgenuity`.
+Levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, scoped by channel (`app`, `hid`, `audio`, `settings`, `ui`, `lighting`). Output is also mirrored to `os_log` and shows up in Console.app under subsystem `io.github.loujessler.macgenuity`.
+
+---
+
+## Custom branding (icons)
+
+You can override both the app icon (Dock) and the menu-bar tray icon without touching code. `build.sh` looks for files in `MacGenuity/Resources/` in this order:
+
+| Slot              | Preferred                        | Fallback                | If neither is present       |
+| ----------------- | -------------------------------- | ----------------------- | --------------------------- |
+| **Tray icon**     | `MenuBarIcon.pdf` (vector template, 22×22 pt, transparent background, black on alpha) | `MenuBarIcon.png` (any size — auto-baked to 22 pt height at load) | Programmatic `HyperXMark`   |
+| **App icon**      | `AppIcon.icns`                   | `AppIcon.png` (1024 × 1024, auto-compiled to `.icns` via `sips` + `iconutil`) | Programmatic stylised "X"   |
+
+The tray icon **must** be a template image (only the alpha channel matters — macOS picks the colour based on the menu-bar appearance). The app icon can use full colour.
+
+To preview a change, drop the file into `MacGenuity/Resources/` and run `./build.sh`. The build script's resource copy is a whitelist — files not in the list don't end up in the bundle.
 
 ---
 
@@ -230,11 +302,19 @@ Some functionality is intentionally restricted to avoid unsafe device operations
 
 ---
 
+## Changelog
+
+Release history lives in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## Roadmap
 
-- Wired-mouse support (no battery, lighting only)
-- Save current lighting / DPI to onboard memory (behind an explicit confirmation)
-- Polling-rate configuration
+- HyperX QuadCast / QuadCast 2S RGB lighting + polar pattern (USB control transfers — protocol notes already linked in `QuadCastProfile.swift`)
+- Macro recording on remappable buttons (`0xD5` / `0xD6` protocol — read by `0xD4` editor, no writer yet)
+- Wired-mouse support
+- Save current lighting / DPI / button config to onboard memory (behind an explicit confirmation)
+- Polling-rate configuration (`0xD0` packet, documented but unused)
 - Auto-update check against GitHub releases (read-only)
 - Localization (UI is currently English-only)
 - More device profiles — please contribute! See [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md)
