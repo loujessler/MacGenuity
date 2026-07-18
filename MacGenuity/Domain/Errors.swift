@@ -60,6 +60,38 @@ enum HIDError: Error, LocalizedError, Equatable {
     }
 }
 
+enum QuadCast2SError: Error, LocalizedError, Equatable {
+    case deviceNotFound
+    case interfaceNotFound(String)
+    case openFailed(Int32)
+    case readReportFailed(reportID: Int, result: Int32)
+    case writeReportFailed(reportID: Int, result: Int32)
+    case malformedReport(reportID: Int)
+    case invalidLightingFrame(String)
+    case notPermitted
+
+    var errorDescription: String? {
+        switch self {
+        case .deviceNotFound:
+            return "HyperX QuadCast 2 S controller not found."
+        case .interfaceNotFound(let name):
+            return "QuadCast 2 S \(name) interface not found."
+        case .openFailed(let result):
+            return "Failed to open the QuadCast 2 S controller (IOReturn \(Hex.ioReturn(result)))."
+        case .readReportFailed(let reportID, let result):
+            return "Failed to read QuadCast 2 S report \(Hex.u8(UInt8(clamping: reportID))) (IOReturn \(Hex.ioReturn(result)))."
+        case .writeReportFailed(let reportID, let result):
+            return "Failed to send QuadCast 2 S report \(Hex.u8(UInt8(clamping: reportID))) (IOReturn \(Hex.ioReturn(result)))."
+        case .malformedReport(let reportID):
+            return "QuadCast 2 S returned an invalid \(Hex.u8(UInt8(clamping: reportID))) report."
+        case .invalidLightingFrame(let reason):
+            return "Invalid QuadCast 2 S lighting frame: \(reason)."
+        case .notPermitted:
+            return "macOS denied access to the QuadCast 2 S controller."
+        }
+    }
+}
+
 enum DeviceError: Error, LocalizedError {
     case permission(PermissionError)
     case hid(HIDError)

@@ -4,17 +4,14 @@
 //
 //  HyperX QuadCast / QuadCast S / QuadCast 2 / QuadCast 2S / DuoCast.
 //
-//  Why this profile exists even without working HID lighting:
+//  Why this profile remains detection-only:
 //    • Detection — without it, the QuadCast HID interfaces show up in the
 //      Diagnostics window as "Unknown" and the Settings sidebar can't
 //      label them. The profile tags them as a known family so the UI
 //      shows the right icon, name and grouping.
-//    • Future protocol work — the QuadCast family uses USB control
-//      transfers (HID class SET_REPORT / GET_REPORT, wValue 0x0300, no
-//      explicit endpoint) for lighting and a separate interrupt endpoint
-//      pair (0x06/0x85) for the QuadCast 2S display engine. The existing
-//      `HIDTransport` (built on `IOHIDDevice`) handles feature reports,
-//      so a future PR can add lighting via `parseInfo`/feature send.
+//    • QuadCast 2 S controls do not fit the mouse-oriented `DeviceProfile`
+//      packet contract. Its RGB uses a separate LampArray HID interface, so
+//      the dedicated `QuadCast2SHardwareService` owns those reports instead.
 //
 //  Protocol references (community reverse-engineering):
 //    • https://github.com/Ors1mer/QuadcastRGB — QuadCast S, DuoCast,
@@ -23,10 +20,9 @@
 //    • https://github.com/j-muell/QuadcastRGB2S — QuadCast 2S (PID 0x02B5)
 //    • https://gitlab.com/CalcProgrammer1/OpenRGB issue #1298
 //
-//  No `lighting` capability is advertised yet — turning it on would expose
-//  a non-functional editor in the Devices pane. Capability stays at
-//  `.info` until the actual SET_REPORT-based wire protocol is implemented
-//  and verified on real hardware.
+//  No generic `lighting` capability is advertised here. QuadCast 2 S RGB is
+//  surfaced beside CoreAudio microphone controls; other Cast models remain
+//  detection-only until their distinct protocols are verified.
 //
 
 import Foundation
@@ -36,7 +32,8 @@ final class QuadCastProfile: DeviceProfile {
     let displayName = "HyperX Cast family (QuadCast / DuoCast / SoloCast)"
     let author      = "MacGenuity"
 
-    /// `info` only — see file header. Lighting is not implemented yet.
+    /// `info` only — see file header. QuadCast 2 S lighting is exposed by its
+    /// dedicated hardware service, not by the mouse profile editor.
     let capabilities: DeviceCapabilities = [.info]
 
     // MARK: - Known IDs
@@ -110,7 +107,7 @@ final class QuadCastProfile: DeviceProfile {
         throw HIDError.malformedReport(reason: "QuadCast is USB-powered; no battery")
     }
 
-    // MARK: - Lighting / DPI (not yet implemented)
+    // MARK: - Generic mouse lighting / DPI (not applicable)
 
     func lightingPackets(target: LEDTarget,
                          effect: LEDEffect,

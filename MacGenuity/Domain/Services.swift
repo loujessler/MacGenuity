@@ -91,3 +91,19 @@ protocol AudioService: AnyObject {
     @discardableResult
     func setMicrophoneVolume(_ scalar: Float, deviceID: UInt32) -> Bool
 }
+
+protocol QuadCast2SService: AnyObject {
+    func snapshot() async -> QuadCast2SHardwareState
+
+    func applyStaticLighting(color: RGBColor, brightness: Int) async throws
+
+    func applyLightingEffect(
+        _ configuration: QuadCast2SEffectConfiguration
+    ) async throws
+
+    /// Stops software frame streaming and leaves the final rendered frame
+    /// visible. Use `restoreAutonomousLighting` to hand control to firmware.
+    func stopLightingEffect() async
+
+    func restoreAutonomousLighting() async throws
+}

@@ -4,6 +4,20 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Full QuadCast 2 S LampArray discovery: 108 individually addressable RGBI lamps, live 12 × 9 cylindrical geometry, and device-declared ~30 FPS rate limiting.
+- Static colour plus seven geometry-aware host effects with editable eight-colour palettes, path, direction, speed, repeats, trail, softness, and brightness controls.
+- Interactive 108-cell lighting painter and a persisted 32-frame animation editor with loop / ping-pong and hold / cross-fade playback.
+- Atomic 108-lamp frame streaming through fourteen Lamp Multi Update reports, clean cancellation, and automatic firmware-animation recovery after stream failures.
+- One-click return to the firmware animation and complete per-microphone effect-state persistence.
+- Hardware-free protocol and renderer regression suite covering captured descriptors, frame batching, every effect, preference migration, and persistence.
+- Expanded verified QuadCast 2 S packet, geometry, timing, and transport notes in `docs/quadcast-2s-protocol.md`.
+
+### Known Issues
+- QuadCast 2 S polar-pattern state and controls are intentionally unavailable. A candidate status-report mapping did not reliably match the physical selector, so the app omits the feature rather than displaying unverified state.
+
 ## [0.2.1] — 2026-05-12
 
 A maintenance release that adds universal-binary packaging and documents

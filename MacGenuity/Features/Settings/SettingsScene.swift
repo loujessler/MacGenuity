@@ -1044,7 +1044,7 @@ private struct MicrophoneDetail: View {
                 Divider()
                 controlsSection
                 propertiesSection
-                quadCastNotice
+                castHardwareSection
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1165,20 +1165,21 @@ private struct MicrophoneDetail: View {
     }
 
     @ViewBuilder
-    private var quadCastNotice: some View {
-        let name = microphone.displayName.lowercased()
-        if name.contains("quadcast") || name.contains("duocast") {
+    private var castHardwareSection: some View {
+        if microphone.isQuadCast2S {
+            QuadCast2SAdvancedControls(microphone: microphone, viewModel: viewModel)
+        } else if microphone.isCastFamily {
             VStack(alignment: .leading, spacing: 6) {
-                Label("RGB lighting & polar pattern — coming soon",
-                      systemImage: "sparkles")
+                Label("Hardware controls unavailable for this model",
+                      systemImage: "info.circle")
                     .font(.system(size: 12, weight: .medium))
-                Text("MacGenuity recognises the QuadCast / DuoCast family but doesn't drive its RGB lighting or polar pattern yet. The protocol is documented in the QuadcastRGB project and uses USB control transfers (HID feature reports) — adding it is a tracked enhancement.")
+                Text("Audio controls are available above. This microphone's lighting controller uses a different protocol from the QuadCast 2 S and is not driven by MacGenuity yet.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.purple.opacity(0.08)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
         }
     }
 
