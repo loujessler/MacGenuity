@@ -112,8 +112,9 @@ MacGenuity/
 │   └── MacGenuityApp.swift                 Scene wiring (MenuBarExtra + Settings + Diagnostics)
 ├── Domain/
 │   ├── Models.swift                        Pure value types (RGBColor, MouseInfo, ButtonAssignment, …)
+│   ├── QuadCast2SLighting.swift             Lamp geometry, effects, palettes, and authored frames
 │   ├── Errors.swift                        DeviceError / HIDError / PermissionError
-│   ├── Services.swift                      DeviceService / AudioService protocols
+│   ├── Services.swift                      DeviceService / AudioService / QuadCast2SService protocols
 │   ├── DeviceProfile.swift                 Public extension point for community-authored profiles
 │   ├── ConfigurableDevice.swift            Unified HID + audio device type for the sidebar
 │   └── Config/
