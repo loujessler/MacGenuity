@@ -43,6 +43,140 @@ struct MicrophoneInfo: Identifiable, Equatable {
     var isSoloCast: Bool {
         displayName.lowercased().contains("solocast")
     }
+
+    var isQuadCast2S: Bool {
+        let normalized = displayName
+            .lowercased()
+            .replacingOccurrences(of: "-", with: " ")
+        return normalized.contains("quadcast 2 s")
+            || normalized.contains("quadcast 2s")
+    }
+
+    var isCastFamily: Bool {
+        let normalized = displayName.lowercased()
+        return normalized.contains("quadcast")
+            || normalized.contains("duocast")
+            || normalized.contains("solocast")
+    }
+}
+
+enum QuadCast2SLightingMode: String, Codable, Equatable {
+    case staticColor
+    case hostEffect
+    case autonomous
+
+    var title: String {
+        switch self {
+        case .staticColor: return "Static colour"
+        case .hostEffect:  return "MacGenuity effect"
+        case .autonomous:  return "Device animation"
+        }
+    }
+}
+
+struct QuadCast2SLightingPreference: Codable, Equatable {
+    var mode: QuadCast2SLightingMode
+    var configuration: QuadCast2SEffectConfiguration
+
+    var color: RGBColor {
+        get { configuration.palette.first ?? PresetColor.purple.rgb }
+        set {
+            if configuration.palette.isEmpty {
+                configuration.palette = [newValue.clamped()]
+            } else {
+                configuration.palette[0] = newValue.clamped()
+            }
+        }
+    }
+
+    var brightness: Int {
+        get { configuration.brightness }
+        set { configuration.brightness = max(0, min(100, newValue)) }
+    }
+
+    init(
+        mode: QuadCast2SLightingMode,
+        configuration: QuadCast2SEffectConfiguration
+    ) {
+        self.mode = mode
+        self.configuration = configuration.normalized()
+    }
+
+    /// Source-compatible initializer and migration target for the original
+    /// solid-colour-only preference format.
+    init(mode: QuadCast2SLightingMode, color: RGBColor, brightness: Int) {
+        var configuration = QuadCast2SEffectConfiguration.default
+        let safeColor = color.clamped()
+        configuration.kind = .solid
+        configuration.palette[0] = safeColor
+        configuration.brightness = max(0, min(100, brightness))
+        configuration.customColors = Array(
+            repeating: safeColor,
+            count: QuadCast2SEffectConfiguration.customLampCount
+        )
+        configuration.customFrames = [configuration.customColors]
+        self.init(mode: mode, configuration: configuration)
+    }
+
+    static let `default` = QuadCast2SLightingPreference(
+        mode: .autonomous,
+        configuration: .default
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, configuration
+        // v1 keys
+        case color, brightness
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let mode = try container.decodeIfPresent(
+            QuadCast2SLightingMode.self,
+            forKey: .mode
+        ) ?? .autonomous
+        if let configuration = try container.decodeIfPresent(
+            QuadCast2SEffectConfiguration.self,
+            forKey: .configuration
+        ) {
+            self.init(mode: mode, configuration: configuration)
+        } else {
+            self.init(
+                mode: mode,
+                color: try container.decodeIfPresent(RGBColor.self, forKey: .color)
+                    ?? PresetColor.purple.rgb,
+                brightness: try container.decodeIfPresent(Int.self, forKey: .brightness)
+                    ?? 100
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(configuration.normalized(), forKey: .configuration)
+    }
+}
+
+struct QuadCast2SHardwareState: Equatable {
+    let isConnected: Bool
+    let hasLightingInterface: Bool
+    let isAnimating: Bool
+    let lampCount: Int?
+    let maximumFramesPerSecond: Double?
+    let lightingMode: QuadCast2SLightingMode?
+    let errorMessage: String?
+
+    static let disconnected = QuadCast2SHardwareState(
+        isConnected: false,
+        hasLightingInterface: false,
+        isAnimating: false,
+        lampCount: nil,
+        maximumFramesPerSecond: nil,
+        lightingMode: nil,
+        errorMessage: nil
+    )
+
 }
 
 struct RGBColor: Equatable, Codable, Hashable {

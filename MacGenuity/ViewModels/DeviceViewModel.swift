@@ -22,6 +22,8 @@ final class DeviceViewModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var microphones: [MicrophoneInfo] = []
     @Published private(set) var lastControlMessage: String?
+    @Published private(set) var quadCast2SState: QuadCast2SHardwareState = .disconnected
+    @Published private(set) var quadCast2SControlMessage: String?
     @Published private(set) var accessState: HIDAccessState = .unknown
     @Published private(set) var activeProfile: ActiveProfileSnapshot?
     /// All HyperX-shaped devices currently attached, deduped by VID:PID.
@@ -40,9 +42,11 @@ final class DeviceViewModel: ObservableObject {
 
     let deviceService: DeviceService
     let audioService: AudioService
+    let quadCast2SService: QuadCast2SService
     let history: BatteryHistory
     let presetStore: PresetStore
     let deviceStates: DeviceStateStore
+    let quadCast2SStates: QuadCast2SStateStore
     let notifier: Notifier
     private let logger: LoggerType
     private weak var settings: AppSettings?
@@ -60,17 +64,21 @@ final class DeviceViewModel: ObservableObject {
 
     init(deviceService: DeviceService? = nil,
          audioService: AudioService? = nil,
+         quadCast2SService: QuadCast2SService? = nil,
          history: BatteryHistory? = nil,
          presetStore: PresetStore? = nil,
          deviceStates: DeviceStateStore? = nil,
+         quadCast2SStates: QuadCast2SStateStore? = nil,
          notifier: Notifier? = nil,
          logger: LoggerType = FileLogger.shared)
     {
         self.deviceService = deviceService ?? HyperXDeviceService()
         self.audioService = audioService ?? CoreAudioMicrophoneService()
+        self.quadCast2SService = quadCast2SService ?? QuadCast2SHardwareService()
         self.history = history ?? BatteryHistory()
         self.presetStore = presetStore ?? PresetStore()
         self.deviceStates = deviceStates ?? DeviceStateStore()
+        self.quadCast2SStates = quadCast2SStates ?? QuadCast2SStateStore()
         self.notifier = notifier ?? Notifier.shared
         self.logger = logger
         self.accessState = self.deviceService.currentAccessState()
@@ -186,6 +194,18 @@ final class DeviceViewModel: ObservableObject {
         }
 
         accessState = deviceService.currentAccessState()
+
+        // QuadCast 2 S lighting and polar status live on dedicated
+        // non-keyboard HID interfaces. They remain accessible when macOS
+        // denies Input Monitoring to the generic mouse/keyboard transport,
+        // so refresh them before applying that transport's permission gate.
+        if mics.contains(where: { $0.isQuadCast2S }) {
+            await refreshQuadCast2S()
+        } else {
+            quadCast2SState = .disconnected
+            quadCast2SControlMessage = nil
+        }
+
         if accessState == .denied {
             self.status = .permissionRequired
             self.lastError = PermissionError.inputMonitoringDenied.errorDescription
@@ -422,6 +442,85 @@ final class DeviceViewModel: ObservableObject {
             lastControlMessage = "Volume not settable in software — use the hardware gain dial"
         }
         await refresh()
+    }
+
+    func quadCast2SLightingPreference(
+        for microphone: MicrophoneInfo
+    ) -> QuadCast2SLightingPreference {
+        quadCast2SStates.preference(for: microphone)
+    }
+
+    func refreshQuadCast2S() async {
+        quadCast2SState = await quadCast2SService.snapshot()
+    }
+
+    func applyQuadCast2SLighting(
+        color: RGBColor,
+        brightness: Int,
+        for microphone: MicrophoneInfo
+    ) async {
+        var configuration = quadCast2SStates
+            .preference(for: microphone)
+            .configuration
+        configuration.kind = .solid
+        if configuration.palette.isEmpty {
+            configuration.palette = [color.clamped()]
+        } else {
+            configuration.palette[0] = color.clamped()
+        }
+        configuration.brightness = brightness
+        await applyQuadCast2SEffect(configuration, for: microphone)
+    }
+
+    func applyQuadCast2SEffect(
+        _ source: QuadCast2SEffectConfiguration,
+        for microphone: MicrophoneInfo
+    ) async {
+        let configuration = source.normalized()
+        let mode: QuadCast2SLightingMode = configuration.kind == .solid
+            ? .staticColor
+            : .hostEffect
+        let preference = QuadCast2SLightingPreference(
+            mode: mode,
+            configuration: configuration
+        )
+        do {
+            try await quadCast2SService.applyLightingEffect(configuration)
+            quadCast2SStates.record(preference, for: microphone)
+            quadCast2SControlMessage = configuration.kind.isAnimated
+                ? "\(configuration.kind.title) is running"
+                : "\(configuration.kind.title) applied"
+            await refreshQuadCast2S()
+        } catch QuadCast2SError.notPermitted {
+            quadCast2SControlMessage = QuadCast2SError.notPermitted.localizedDescription
+            await refreshQuadCast2S()
+        } catch {
+            quadCast2SControlMessage = "Lighting failed: \(error.localizedDescription)"
+            logger.error(.lighting, "QuadCast 2 S lighting: \(error.localizedDescription)")
+        }
+    }
+
+    func stopQuadCast2SEffect() async {
+        await quadCast2SService.stopLightingEffect()
+        quadCast2SControlMessage = "Effect paused on its current frame"
+        await refreshQuadCast2S()
+    }
+
+    func restoreQuadCast2SAutonomousLighting(for microphone: MicrophoneInfo) async {
+        do {
+            try await quadCast2SService.restoreAutonomousLighting()
+            var preference = quadCast2SStates.preference(for: microphone)
+            preference.mode = .autonomous
+            quadCast2SStates.record(preference, for: microphone)
+            quadCast2SControlMessage = "Device animation restored"
+            await refreshQuadCast2S()
+        } catch QuadCast2SError.notPermitted {
+            quadCast2SControlMessage = QuadCast2SError.notPermitted.localizedDescription
+            await refreshQuadCast2S()
+        } catch {
+            quadCast2SControlMessage = "Lighting failed: \(error.localizedDescription)"
+            logger.error(.lighting, "QuadCast 2 S autonomous mode: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Buttons

@@ -76,7 +76,7 @@ The Settings window's **Devices** tab lists every attached HyperX peripheral on 
 
 - `DeviceProfile` protocol with capability flags — UI hides controls a profile doesn't support
 - Score-based registry picks the best profile per discovered device
-- Shipped profiles: `DefaultHyperXProfile` (NGenuity2 / Pulsefire family), `PulsefireHasteProfile` (worked example), `QuadCastProfile` (detection-only for the Cast family)
+- Shipped profiles: `DefaultHyperXProfile` (NGenuity2 / Pulsefire family), `PulsefireHasteProfile` (worked example), `QuadCastProfile` (Cast-family detection; QuadCast 2 S hardware controls use a dedicated service)
 - Contributors add their device by copying a profile, tweaking packet bytes, and registering it. See [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md).
 
 ### Diagnostics window
@@ -112,8 +112,9 @@ MacGenuity/
 │   └── MacGenuityApp.swift                 Scene wiring (MenuBarExtra + Settings + Diagnostics)
 ├── Domain/
 │   ├── Models.swift                        Pure value types (RGBColor, MouseInfo, ButtonAssignment, …)
+│   ├── QuadCast2SLighting.swift             Lamp geometry, effects, palettes, and authored frames
 │   ├── Errors.swift                        DeviceError / HIDError / PermissionError
-│   ├── Services.swift                      DeviceService / AudioService protocols
+│   ├── Services.swift                      DeviceService / AudioService / QuadCast2SService protocols
 │   ├── DeviceProfile.swift                 Public extension point for community-authored profiles
 │   ├── ConfigurableDevice.swift            Unified HID + audio device type for the sidebar
 │   └── Config/
@@ -131,19 +132,23 @@ MacGenuity/
 │   ├── Diagnostics/
 │   │   └── DiagnosticsWindow.swift         Candidate list + raw sender + live log tail
 │   └── Settings/
-│       └── SettingsScene.swift             General / Devices / Profiles / About panes
+│       ├── SettingsScene.swift             General / Devices / Profiles / About panes
+│       └── QuadCast2SAdvancedControls.swift 108-LED effect and frame-animation editor
 ├── Infrastructure/
 │   ├── HID/
 │   │   ├── HIDPermission.swift             IOHIDCheckAccess / IOHIDRequestAccess
 │   │   ├── HIDDeviceFinder.swift           Enumerate HyperX-shaped HID interfaces (no opens)
 │   │   ├── HIDTransport.swift              One IOHIDDevice handle, send/receive, persistent input callback
 │   │   ├── HyperXDeviceService.swift       Actor that dispatches through the resolved profile
+│   │   ├── QuadCast2SHardwareService.swift Geometry discovery + rate-limited LampArray stream actor
 │   │   └── Profiles/
 │   │       ├── PacketUtils.swift           Helpers (build, parse, validate)
 │   │       ├── ProfileRegistry.swift       Score-based device → profile resolution
 │   │       ├── DefaultHyperXProfile.swift  NGenuity2 reference implementation (lighting / DPI / buttons)
 │   │       ├── PulsefireHasteProfile.swift Worked example for new contributors
 │   │       ├── QuadCastProfile.swift       Cast-family detection (QuadCast / DuoCast / SoloCast)
+│   │       ├── QuadCast2SProtocol.swift     Verified packet builders and parsers
+│   │       ├── QuadCast2SEffectRenderer.swift Pure spatial and authored-frame renderer
 │   │       └── PROFILES.md                 Step-by-step authoring guide
 │   ├── Audio/
 │   │   └── CoreAudioMicrophoneService.swift  CoreAudio enumeration + property listeners + setters
@@ -152,6 +157,7 @@ MacGenuity/
 │       ├── BatteryHistory.swift            Persistent rolling timeline
 │       ├── PresetStore.swift               Named lighting presets + recent colours
 │       ├── DeviceStateStore.swift          Per-device lighting / DPI / button assignments
+│       ├── QuadCast2SStateStore.swift       Per-microphone effect and frame-editor state
 │       ├── DockPolicyManager.swift         LSUIElement-aware Dock-icon policy
 │       └── Notifier.swift                  Low-battery system notifications
 ├── Shared/
@@ -175,7 +181,7 @@ MacGenuity/
 
 ### Permission handling
 
-The app uses `IOHIDCheckAccess` to determine the current Input Monitoring state and `IOHIDRequestAccess` to politely prompt for it. It will never call `IOHIDDeviceOpen` while access is denied — that previously caused tight TCC retry loops and `TCC deny IOHIDDeviceOpen` log spam.
+The app uses `IOHIDCheckAccess` to determine the current Input Monitoring state and `IOHIDRequestAccess` to politely prompt for it. Mouse and keyboard transports are not opened while access is denied — that previously caused tight TCC retry loops and `TCC deny IOHIDDeviceOpen` log spam. Dedicated non-input interfaces, such as the QuadCast 2 S LampArray, are probed independently because macOS exposes them without Input Monitoring permission.
 
 When permission is missing the menu shows a "Permission" section with **System Settings** (opens the Input Monitoring pane) and **Relaunch** (quits and immediately re-opens the app — required because macOS caches per-process TCC state and a running app can't see a freshly-granted permission until it restarts).
 
@@ -367,8 +373,12 @@ To preview a change, drop the file into `MacGenuity/Resources/` and run `./build
 
 - Firmware flashing (out of scope).
 - Writing settings to onboard memory (`SAVE_TO_HARDWARE`) — intentionally not implemented to avoid corrupting non-volatile mouse memory.
-- Full LED / DPI control. The HyperX protocol is only partially reverse-engineered, and several effects are device-specific.
+- Full LED / DPI control for every HyperX mouse. Those protocols remain partially reverse-engineered and several effects are model-specific; the QuadCast 2 S LampArray path is independently implemented.
 - Polling rate configuration.
+- QuadCast 2 S polar-pattern readback and changes. The candidate status report
+  did not reliably match the microphone's physical selector, so MacGenuity
+  intentionally exposes neither state nor controls until the protocol can be
+  independently captured and verified.
 
 Some functionality is intentionally restricted to avoid unsafe device operations.
 
@@ -382,7 +392,8 @@ Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
 
-- HyperX QuadCast / QuadCast 2S RGB lighting + polar pattern (USB control transfers — protocol notes already linked in `QuadCastProfile.swift`)
+- RGB support for additional QuadCast / DuoCast revisions (their controller protocols differ from QuadCast 2 S)
+- QuadCast 2 S polar-pattern support only after both state and write traffic are independently captured and verified on hardware
 - Macro recording on remappable buttons (`0xD5` / `0xD6` protocol — read by `0xD4` editor, no writer yet)
 - Wired-mouse support
 - Save current lighting / DPI / button config to onboard memory (behind an explicit confirmation)
