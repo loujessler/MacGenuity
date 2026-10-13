@@ -35,7 +35,7 @@ struct SettingsScene: View {
             AboutPane()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 720, height: 520)
+        .frame(minWidth: 800, minHeight: 600)
     }
 }
 
@@ -457,9 +457,7 @@ private struct LightingSection: View {
     @State private var opacity: Double = 255
     @State private var speed: Double = 0
     @State private var includeHasteProbe: Bool = false
-    /// Streaming colour to the device while sliders/picker move is the
-    /// expected interaction model now — the editor doubles as a live
-    /// preview, and the dedicated "Apply" button persists the final state.
+    /// Preview changes immediately, then save once the user stops editing.
     @State private var liveStream: Bool = true
     @State private var presetName: String = ""
 
@@ -478,13 +476,14 @@ private struct LightingSection: View {
         .onReceive(NotificationCenter.default.publisher(for: .deviceDidChange)) { _ in
             hydrate()
         }
-        .onChange(of: color) { newValue in scheduleLiveUpdate(newValue) }
-        .onChange(of: opacity) { _ in scheduleLiveUpdate(color) }
-        .onChange(of: brightness) { _ in scheduleLiveUpdate(color) }
-        .onChange(of: speed) { _ in scheduleLiveUpdate(color) }
-        .onChange(of: effect) { _ in scheduleLiveUpdate(color) }
+        .onChange(of: color) { _ in scheduleLiveUpdate() }
+        .onChange(of: opacity) { _ in scheduleLiveUpdate() }
+        .onChange(of: brightness) { _ in scheduleLiveUpdate() }
+        .onChange(of: speed) { _ in scheduleLiveUpdate() }
+        .onChange(of: effect) { _ in scheduleLiveUpdate() }
+        .onChange(of: includeHasteProbe) { _ in scheduleLiveUpdate() }
         .onChange(of: liveStream) { enabled in
-            if enabled { scheduleLiveUpdate(color) } else { streamTask?.cancel() }
+            if enabled { scheduleLiveUpdate() } else { streamTask?.cancel() }
         }
         .onDisappear { streamTask?.cancel() }
     }
@@ -516,45 +515,58 @@ private struct LightingSection: View {
     }
 
     private var slidersAndOptions: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text("Brightness").frame(width: 90, alignment: .leading)
                 Slider(value: $brightness, in: 0...100, step: 1)
-                Text("\(Int(brightness))%").frame(width: 40, alignment: .trailing).monospacedDigit()
+                Text("\(Int(brightness))%")
+                    .frame(width: 40, alignment: .trailing).monospacedDigit()
             }
-            .help("Hardware brightness byte (D2 byte 10). Maps to 0–100 % on the device.")
 
-            HStack(spacing: 8) {
-                Text("Opacity").frame(width: 90, alignment: .leading)
-                Slider(value: $opacity, in: 0...255, step: 1)
-                Text("\(Int(opacity))").frame(width: 40, alignment: .trailing).monospacedDigit()
+            if effect.usesSpeed {
+                HStack(spacing: 8) {
+                    Text("Speed").frame(width: 90, alignment: .leading)
+                    Slider(value: $speed, in: 0...100, step: 1)
+                    Text("\(Int(speed))%")
+                        .frame(width: 40, alignment: .trailing).monospacedDigit()
+                }
             }
-            .help("Software RGB attenuation. Pre-multiplies the colour before sending. Independent from Brightness; works for every effect.")
 
-            HStack(spacing: 8) {
-                Text("Speed").frame(width: 90, alignment: .leading)
-                Slider(value: $speed, in: 0...100, step: 1)
-                    .disabled(!effect.usesSpeed)
-                Text("\(Int(speed))%").frame(width: 40, alignment: .trailing).monospacedDigit()
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Live preview")
+                    Text(liveStream ? "Changes are saved automatically." : "Use Apply lighting to save changes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("Live preview", isOn: $liveStream)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
             }
-            .help(effect.usesSpeed ? "" : "Static colour ignores speed.")
 
-            Toggle("Live update — stream while changing", isOn: $liveStream)
-                .help("Send a colour packet on every slider change, like NGENUITY does while you drag its colour wheel.")
-
-            if viewModel.activeProfile?.capabilities.contains(.hasteDirect) == true {
-                DisclosureGroup("Advanced") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Toggle("Haste direct color (0x81 + 1 Hz keepalive)", isOn: $includeHasteProbe)
-                        Text("Experimental. Sends a streamed-frame command + a 1 Hz keepalive. On Pulsefire firmware this is interpreted as 'next animation step' — leave OFF for plain static colour. Enabling this with the static effect produces a 1 Hz pulse.")
-                            .font(.system(size: 11))
+            DisclosureGroup("Advanced") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text("Colour intensity").frame(width: 100, alignment: .leading)
+                        Slider(value: $opacity, in: 0...255, step: 1)
+                        Text("\(Int((opacity / 255 * 100).rounded()))%")
+                            .frame(width: 40, alignment: .trailing).monospacedDigit()
+                    }
+                    .help("Scale the RGB colour independently of device brightness.")
+                    if viewModel.activeProfile?.capabilities.contains(.hasteDirect) == true {
+                        Toggle("Experimental direct colour", isOn: $includeHasteProbe)
+                        Text("Uses a continuous colour stream. Leave off for normal static lighting; some firmware may pulse in this mode.")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(.top, 4)
                 }
+                .padding(.top, 8)
             }
         }
+        .font(.system(size: 12))
     }
 
     private var applyRow: some View {
@@ -712,35 +724,18 @@ private struct LightingSection: View {
         includeHasteProbe = s.includeHasteProbe
     }
 
-    private func scheduleLiveUpdate(_ newColor: RGBColor) {
-        guard liveStream, snapshotState() != hydratedState else { return }
+    private func scheduleLiveUpdate() {
+        let state = snapshotState()
+        guard liveStream, state != hydratedState else { return }
         streamTask?.cancel()
-        hydratedState = snapshotState()
+        hydratedState = state
         let deviceKey = viewModel.activeProfile?.fingerprint.stableKey
-        let selectedTarget = target
-        let attenuated = applyOpacity(newColor)
-        let e = effect
-        let b = Int(brightness.rounded())
-        let sp = Int(speed.rounded())
         streamTask = Task { [weak viewModel] in
             try? await Task.sleep(nanoseconds: 30_000_000)
             guard !Task.isCancelled,
                   viewModel?.activeProfile?.fingerprint.stableKey == deviceKey else { return }
-            await viewModel?.streamLightingFrame(
-                target: selectedTarget, effect: e, color: attenuated,
-                brightness: b, speed: sp
-            )
+            await viewModel?.applyLighting(state: state, persist: false)
         }
-    }
-
-    private func applyOpacity(_ c: RGBColor) -> RGBColor {
-        let scale = max(0.0, min(255.0, opacity)) / 255.0
-        let safe = c.clamped()
-        return RGBColor(
-            red:   Int((Double(safe.red)   * scale).rounded()),
-            green: Int((Double(safe.green) * scale).rounded()),
-            blue:  Int((Double(safe.blue)  * scale).rounded())
-        )
     }
 
     private func swiftUIColor(_ c: RGBColor) -> Color {
@@ -758,7 +753,7 @@ private struct DPISection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Tap the radio button to choose which profile is active. Each level can be enabled, set 50–16 000 DPI, and given an indicator colour shown on the mouse when you cycle through with the on-mouse DPI button.")
+            Text("Choose an active level. Enabled levels cycle with the mouse’s DPI button. Apply saves sensitivity and indicator colours.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -920,20 +915,53 @@ private struct CollapsibleSection<Content: View>: View {
     let systemImage: String
     @ViewBuilder let content: () -> Content
 
-    @State private var isExpanded: Bool = false
+    @State private var isExpanded = false
+    @State private var hasExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            content()
-                .padding(.top, 8)
-        } label: {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                // Avoid animating the layout of native pickers and sliders.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    hasExpanded = true
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: systemImage)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 20)
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
                 .contentShape(Rectangle())
-                .onTapGesture { isExpanded.toggle() }
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+
+            // Construct each editor on first use, then retain unsaved edits
+            // while collapsed without animating its entire view hierarchy.
+            if hasExpanded {
+                VStack(spacing: 0) {
+                    Divider().padding(.horizontal, 14)
+                    content().padding(14)
+                }
+                .frame(height: isExpanded ? nil : 0, alignment: .top)
+                .clipped()
+                .opacity(isExpanded ? 1 : 0)
+                .disabled(!isExpanded)
+                .accessibilityHidden(!isExpanded)
+            }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
     }
 }
 
@@ -949,7 +977,7 @@ private struct ButtonsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Re-bind side buttons, the wheel click and the on-mouse DPI button. Left and right click are intentionally not editable — losing them mid-session would lock you out of the editor.")
+            Text("Assign actions to the wheel, side buttons and DPI button. Primary clicks stay unchanged.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

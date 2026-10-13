@@ -45,7 +45,9 @@ CLEANUP_PATHS=()
 cleanup() {
     if [[ ${#CLEANUP_PATHS[@]} -gt 0 ]]; then
         for p in "${CLEANUP_PATHS[@]}"; do
-            [[ -e "${p}" ]] && rm -rf "${p}"
+            if [[ -e "${p}" ]]; then
+                rm -rf "${p}"
+            fi
         done
     fi
 }

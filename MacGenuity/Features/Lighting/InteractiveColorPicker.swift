@@ -47,7 +47,7 @@ struct InteractiveColorPicker: View {
             }
             presetStrip
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 0)
         .padding(.vertical, 4)
     }
 
@@ -57,7 +57,7 @@ struct InteractiveColorPicker: View {
         HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 4)
                 .fill(swiftUIColor(color))
-                .frame(height: 22)
+                .frame(height: 32)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(Color.secondary.opacity(0.4), lineWidth: 0.5)
@@ -88,7 +88,7 @@ struct InteractiveColorPicker: View {
     private var recentStrip: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Recent")
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.tertiary)
                 .padding(.top, 2)
             HStack(spacing: 4) {
@@ -98,7 +98,7 @@ struct InteractiveColorPicker: View {
                     } label: {
                         RoundedRectangle(cornerRadius: 3)
                             .fill(swiftUIColor(swatch))
-                            .frame(width: 16, height: 16)
+                            .frame(width: 22, height: 22)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 3)
                                     .stroke(swatch == color ? Color.primary : Color.secondary.opacity(0.4),
@@ -106,6 +106,7 @@ struct InteractiveColorPicker: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Colour \(swatch.hexString)")
                     .help(swatch.hexString)
                 }
             }
@@ -114,8 +115,8 @@ struct InteractiveColorPicker: View {
 
     private var presetStrip: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Presets")
-                .font(.system(size: 9, weight: .medium))
+            Text("Colours")
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.tertiary)
                 .padding(.top, 2)
             HStack(spacing: 4) {
@@ -125,7 +126,7 @@ struct InteractiveColorPicker: View {
                     } label: {
                         RoundedRectangle(cornerRadius: 3)
                             .fill(swiftUIColor(preset.rgb))
-                            .frame(width: 16, height: 16)
+                            .frame(width: 22, height: 22)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 3)
                                     .stroke(preset.rgb == color ? Color.primary : Color.secondary.opacity(0.4),
@@ -133,6 +134,7 @@ struct InteractiveColorPicker: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(preset.title)
                     .help(preset.title)
                 }
             }

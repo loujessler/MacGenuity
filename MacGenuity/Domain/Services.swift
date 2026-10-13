@@ -24,7 +24,7 @@ protocol DeviceService: AnyObject {
                        color: RGBColor,
                        brightness: Int,
                        speed: Int,
-                       includeHasteProbe: Bool) async throws
+                       includeHasteProbe: Bool, persist: Bool) async throws
 
     func applyDPI(profile: Int, dpi: Int) async throws
 
@@ -41,7 +41,7 @@ protocol DeviceService: AnyObject {
 
     /// Lists every plausible HyperX device currently attached, deduped
     /// by VID:PID (one entry per physical mouse/headset).
-    func availableDevices() -> [DeviceFingerprint]
+    func availableDevices() async -> [DeviceFingerprint]
 
     /// Forces the service to use the device with the given fingerprint.
     /// Closes the current transport, stores the user preference, and the

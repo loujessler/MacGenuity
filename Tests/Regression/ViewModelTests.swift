@@ -12,6 +12,8 @@ private final class FakeDeviceService: DeviceService {
     var probeCount = 0
     var lightingColors: [RGBColor] = []
     var keepaliveCount = 0
+    var lightingCommits: [Bool] = []
+    var lightingError: HIDError?
     var selectionGate: CheckedContinuation<Void, Never>?
     var delaySelection = false
 
@@ -33,8 +35,10 @@ private final class FakeDeviceService: DeviceService {
             fingerprint: fingerprint)
     }
     func applyLighting(target: LEDTarget, effect: LEDEffect, color: RGBColor,
-                       brightness: Int, speed: Int, includeHasteProbe: Bool) async throws {
+                       brightness: Int, speed: Int, includeHasteProbe: Bool, persist: Bool) async throws {
+        if let lightingError { throw lightingError }
         lightingColors.append(color)
+        lightingCommits.append(persist)
     }
     func applyDPI(profile: Int, dpi: Int) async throws {}
     func applyDPIBatch(levels: [DPILevel], activeProfile: Int) async throws {}
@@ -125,6 +129,46 @@ enum ViewModelTests {
         precondition(service.lightingColors.count == writesAfterApply,
                      "An older DPI operation must not overwrite a newer lighting edit")
         precondition(store.state(for: fingerprint).lighting.color == blue.color)
+        service.delaySelection = false
+        var green = DeviceLightingState.default
+        green.color = PresetColor.green.rgb
+        await viewModel.applyLighting(state: green, persist: false)
+        precondition(service.lightingCommits.last == false, "Live frames must not write flash")
+        precondition(store.state(for: fingerprint).lighting == green,
+                     "Live colour must be the current state, not the previous saved effect")
+        let writesAfterPreview = service.lightingColors.count
+        try await Task.sleep(nanoseconds: 650_000_000)
+        precondition(service.lightingColors.count == writesAfterPreview + 1)
+        precondition(service.lightingCommits.last == true,
+                     "The settled Live selection must be committed without an Apply click")
+        await viewModel.selectDPIProfile(2, previewColor: PresetColor.red.rgb)
+        try await Task.sleep(nanoseconds: 1_650_000_000)
+        precondition(service.lightingColors.last == green.effectiveColor,
+                     "A DPI flash must restore the latest Live colour")
+        precondition(service.lightingCommits.last == false,
+                     "The transient DPI indicator must never be committed")
+
+        await viewModel.applyLighting(state: blue, persist: false)
+        await viewModel.applyLighting(state: green, persist: false)
+        let writesAfterLatestPreview = service.lightingColors.count
+        try await Task.sleep(nanoseconds: 650_000_000)
+        precondition(service.lightingColors.count == writesAfterLatestPreview + 1,
+                     "Rapid previews must coalesce to one save")
+        precondition(service.lightingColors.last == green.effectiveColor)
+
+        await viewModel.applyLighting(state: blue, persist: false)
+        await viewModel.setActiveDevice(fingerprint)
+        let writesAfterSwitch = service.lightingColors.count
+        try await Task.sleep(nanoseconds: 650_000_000)
+        precondition(service.lightingColors.count == writesAfterSwitch,
+                     "Pending saves must not reach a newly selected device")
+        service.lightingError = .notPermitted
+        let previousLighting = store.state(for: fingerprint).lighting
+        await viewModel.applyLighting(state: green, persist: false)
+        precondition(store.state(for: fingerprint).lighting == previousLighting,
+                     "Failed previews must not be recorded as applied")
+        service.lightingError = nil
+
         viewModel.setPollInterval(.infinity)
         precondition(viewModel.pollInterval == 60)
         viewModel.stop()

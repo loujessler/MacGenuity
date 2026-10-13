@@ -189,8 +189,9 @@ actor HyperXDeviceService: DeviceService {
                        color: RGBColor,
                        brightness: Int,
                        speed: Int,
-                       includeHasteProbe: Bool) async throws
+                       includeHasteProbe: Bool, persist: Bool) async throws
     {
+        try Task.checkCancellation()
         try ensureTransport()
         guard let transport, let profile = activeProfile else {
             throw HIDError.deviceNotFound
@@ -205,6 +206,11 @@ actor HyperXDeviceService: DeviceService {
                                                   brightness: brightness, speed: speed) {
                 try send(packet, transport: transport)
             }
+        }
+
+        // Preview frames stay in RAM; commit only the settled user selection.
+        if persist, let commit = profile.commitPacket() {
+            try send(commit, transport: transport)
         }
 
         if includeHasteProbe, profile.capabilities.contains(.hasteDirect) {
@@ -260,9 +266,8 @@ actor HyperXDeviceService: DeviceService {
         }
     }
 
-    nonisolated func availableDevices() -> [DeviceFingerprint] {
-        // Discovery is non-isolated and only enumerates — safe to call
-        // from any thread without permission.
+    func availableDevices() -> [DeviceFingerprint] {
+        // Keep synchronous IOKit enumeration off the UI actor.
         let candidates = HIDDeviceFinder.discoverCandidates(logger: FileLogger.shared)
 
         // De-duplicate by VID:PID; pick the candidate that best matches

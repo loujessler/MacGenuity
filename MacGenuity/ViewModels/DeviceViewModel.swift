@@ -53,6 +53,7 @@ final class DeviceViewModel: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
+    private var lightingSaveTask: Task<Void, Never>?
     private var microphoneObserver: NSObjectProtocol?
     /// Restores the previous lighting state after a DPI profile colour flash.
     /// Cancellable so rapid radio clicks coalesce into one final restore.
@@ -203,9 +204,9 @@ final class DeviceViewModel: ObservableObject {
         let generation = selectionGeneration
         refreshMicrophones()
         let mics = microphones
-        // Also keep the device picker fresh — discovery is cheap and
-        // doesn't open anything, so it can run on every poll.
-        let devices = deviceService.availableDevices()
+        // Enumeration can block in IOKit; run it on the service actor.
+        let devices = await deviceService.availableDevices()
+        guard generation == selectionGeneration else { return }
         self.availableDevices = devices
 
         // Reconcile the user's saved selection with what's actually
@@ -327,6 +328,7 @@ final class DeviceViewModel: ObservableObject {
     private func cancelLightingTasks() {
         lightingGeneration &+= 1
         keepaliveTask?.cancel(); keepaliveTask = nil
+        lightingSaveTask?.cancel(); lightingSaveTask = nil
         dpiPreviewRestoreTask?.cancel(); dpiPreviewRestoreTask = nil
     }
 
@@ -341,7 +343,7 @@ final class DeviceViewModel: ObservableObject {
 
     // MARK: - Lighting / DPI
 
-    func applyLighting(state: DeviceLightingState) async {
+    func applyLighting(state: DeviceLightingState, persist: Bool = true) async {
         cancelLightingTasks()
         let fingerprint = activeProfile?.fingerprint
         let generation = selectionGeneration
@@ -359,23 +361,42 @@ final class DeviceViewModel: ObservableObject {
                 color: wireColor,
                 brightness: state.brightness,
                 speed: state.speed,
-                includeHasteProbe: state.includeHasteProbe
+                includeHasteProbe: persist && state.includeHasteProbe, persist: persist
             )
             // Persist as the last-applied state for THIS device.
             guard generation == selectionGeneration,
                   lightingRevision == lightingGeneration else { return }
-            presetStore.recordColor(state.color)
+            if persist { presetStore.recordColor(state.color) }
             if let fp = fingerprint {
                 deviceStates.record(lighting: state, for: fp)
             }
-            lastControlMessage = "Lighting applied"
-            if state.includeHasteProbe && state.effect == .staticColor {
-                startKeepalive(color: wireColor)
+            lastControlMessage = persist ? "Lighting saved" : "Previewing lighting…"
+            if persist {
+                if state.includeHasteProbe && state.effect == .staticColor {
+                    startKeepalive(color: wireColor)
+                }
+            } else {
+                // The view can close while this settles. Keep saving owned by
+                // the model, and invalidate it on a newer edit or device switch.
+                lightingSaveTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled, let self,
+                          generation == self.selectionGeneration,
+                          lightingRevision == self.lightingGeneration else { return }
+                    self.lightingSaveTask = nil
+                    await self.applyLighting(state: state)
+                }
             }
+        } catch is CancellationError {
+            return
         } catch HIDError.notPermitted {
+            guard generation == selectionGeneration,
+                  lightingRevision == lightingGeneration else { return }
             accessState = .denied
             lastControlMessage = "Permission required"
         } catch {
+            guard generation == selectionGeneration,
+                  lightingRevision == lightingGeneration else { return }
             lastControlMessage = "Lighting failed: \(error.localizedDescription)"
             logger.error(.lighting, "applyLighting: \(error.localizedDescription)")
         }
@@ -397,28 +418,13 @@ final class DeviceViewModel: ObservableObject {
         ))
     }
 
-    /// Live-stream variant of `applyLighting`: sends one frame, does not
-    /// touch the keepalive task, does not record the colour in recents,
-    /// silently swallows transient HID errors. Used by the colour picker's
-    /// "Live update" toggle while the user drags sliders.
-    func streamLightingFrame(target: LEDTarget,
-                             effect: LEDEffect,
-                             color: RGBColor,
-                             brightness: Int,
-                             speed: Int) async
-    {
-        cancelLightingTasks()
-        await sendLightingFrame(target: target, effect: effect, color: color,
-                                brightness: brightness, speed: speed)
-    }
-
     private func sendLightingFrame(target: LEDTarget, effect: LEDEffect,
                                    color: RGBColor, brightness: Int, speed: Int) async {
         do {
             try await deviceService.applyLighting(
                 target: target, effect: effect, color: color,
                 brightness: brightness, speed: speed,
-                includeHasteProbe: false
+                includeHasteProbe: false, persist: false
             )
         } catch HIDError.notPermitted {
             accessState = .denied
@@ -672,7 +678,7 @@ final class DeviceViewModel: ObservableObject {
             }
 
             // 2. Push the profile's colour to the LED for visible feedback.
-            //    Use the preview-grade `streamLightingFrame` so we don't
+            //    Use the preview-grade `sendLightingFrame` so we don't
             //    spawn a haste keepalive or write the colour into preset
             //    history — this is a TRANSIENT flash, not user intent.
             await sendLightingFrame(

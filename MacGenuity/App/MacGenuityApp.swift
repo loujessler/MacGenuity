@@ -14,6 +14,20 @@ struct MacGenuityApp: App {
     @StateObject private var deviceStates: DeviceStateStore
 
     init() {
+        // Two copies would send competing lighting commands to the same mouse.
+        let current = NSRunningApplication.current
+        if let identifier = Bundle.main.bundleIdentifier,
+           let first = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            .filter({ !$0.isTerminated })
+            .min(by: {
+                let lhs = $0.launchDate ?? .distantPast
+                let rhs = $1.launchDate ?? .distantPast
+                return lhs == rhs ? $0.processIdentifier < $1.processIdentifier : lhs < rhs
+            }), first.processIdentifier != current.processIdentifier {
+            first.activate(options: [.activateIgnoringOtherApps])
+            exit(EXIT_SUCCESS)
+        }
+
         // Install the Dock-policy watcher early so the very first window
         // open / close transition is observed.
         DockPolicyManager.shared.install()
@@ -73,7 +87,8 @@ struct MacGenuityApp: App {
                 presetStore: presetStore
             )
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 840, height: 640)
         .defaultPosition(.center)
 
         Window("Diagnostics", id: "diagnostics") {

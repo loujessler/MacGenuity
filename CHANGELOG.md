@@ -4,6 +4,29 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-10-13
+
+Lighting persistence and settings interaction fixes for Pulsefire mice.
+
+### Fixed
+- Live lighting now updates the current per-device state and automatically saves the settled selection after 500 ms. Preview frames do not send commits; explicit Apply and the debounced save send the profile's existing commit packet after the lighting command.
+- DPI colour feedback restores the latest Live selection instead of an older applied effect. Temporary DPI flashes remain uncommitted.
+- New edits and device changes invalidate pending saves. Cancelled lighting commands are rejected before transport access, and failed previews are not recorded as applied.
+- A newly launched copy activates the first running MacGenuity and exits before starting HID access, preventing two new app instances from sending competing lighting commands. Older versions cannot enforce this guard themselves.
+- HID discovery runs on the device-service actor instead of synchronously on the UI actor.
+- Native builds no longer return a failure exit status merely because an icon temporary directory has already been removed.
+
+### Interface
+- Lighting, DPI and Buttons use full-width disclosure buttons with immediate layout changes. Editors are created on first use; collapsing retains their unsaved edits.
+- Settings are resizable, with more space for device controls and consistent bordered panels, spacing and larger colour swatches.
+- Live preview explicitly explains automatic saving. Speed appears only for animated effects; colour intensity and experimental direct streaming live under Advanced.
+- Shorter DPI and button guidance, and accessible colour swatch labels.
+
+### Verification and limitations
+- Added regression coverage for Live autosave, coalescing, DPI restoration, cancellation on device selection and failed-preview persistence.
+- Physical colour retention and measured disclosure latency still require a device/UI acceptance check. macOS window automation timed out during this pass, and HID access for the newly signed build was not confirmed.
+- Ad-hoc signed, not notarized. Updating can require granting Input Monitoring again. No new third-party dependencies; macOS 13+ remains supported.
+
 ## [0.3.0] — 2026-10-13
 
 Reliability and release audit focused on SoloCast and the original Pulsefire Haste Wireless, retaining the compact menu and per-device settings layout. Includes the previously merged QuadCast 2 S work.
