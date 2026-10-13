@@ -172,9 +172,10 @@ final class DeviceViewModel: ObservableObject {
     func requestAccessIfNeeded() async {
         let state = deviceService.currentAccessState()
         accessState = state
-        guard state == .unknown else { return }
-        logger.info(.app, "first-launch: triggering Input Monitoring prompt")
-        await requestAccess()
+        guard state != .granted else { return }
+        logger.info(.app, "startup: requesting Input Monitoring access")
+        // Do not delay the other startup permissions with a full HID probe.
+        accessState = await deviceService.requestAccess()
     }
 
     func openInputMonitoringSettings() {

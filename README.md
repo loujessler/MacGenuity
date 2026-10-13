@@ -216,37 +216,31 @@ The build script:
 
 Writes the result to `build/MacGenuity.app`.
 
-### Distribution build (release zip for GitHub)
-
-A real distribution build needs **Apple Developer Program membership** (a paid account) plus a *Developer ID Application* certificate — Apple Development certs cannot distribute apps to other Macs. Without notarization downloaded copies will trigger macOS Gatekeeper's "the app is damaged" dialog (see [Distributing to other Macs](#distributing-to-other-macs-quarantine--notarization) below).
+### Distribution build (DMG for GitHub)
 
 ```bash
-# 1. Universal Developer ID-signed build, no debug entitlement
-HYPERX_UNIVERSAL=1 \
-HYPERX_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-HYPERX_ALLOW_DEBUG=0 \
-./build.sh
-
-# 2. Wrap with `ditto` (preserves macOS metadata + signature)
-cd build && ditto -c -k --keepParent MacGenuity.app MacGenuity-0.2.1.zip
-
-# 3. Notarize (requires app-specific Apple ID password set up once
-#    via `xcrun notarytool store-credentials AC_PROFILE`)
-xcrun notarytool submit MacGenuity-0.2.1.zip --keychain-profile AC_PROFILE --wait
-
-# 4. Staple the notarization ticket onto the .app so Gatekeeper can
-#    verify it offline
-xcrun stapler staple MacGenuity.app
-
-# 5. Re-zip the stapled .app for GitHub release upload
-ditto -c -k --keepParent MacGenuity.app MacGenuity-0.2.1-notarized.zip
+HYPERX_UNIVERSAL=1 HYPERX_SIGN_IDENTITY=- HYPERX_ALLOW_DEBUG=0 ./build.sh
+bash tools/package-dmg.sh
 ```
 
-To install:
+The packaging script reads the version from `Info.plist` and creates
+`build/MacGenuity-x.y.z.dmg`. It verifies the image, mounts it read-only,
+checks the app signature and Applications link, then ejects it.
+
+To install, open the DMG, drag **MacGenuity** onto **Applications**, eject the
+image, and launch the installed app. Quit older copies before updating.
+Input Monitoring and notification authorization are requested at launch.
+
+For a notarized release, build with your `Developer ID Application` identity
+instead of `-`, then sign, submit and staple the DMG:
 
 ```bash
-cp -R build/MacGenuity.app /Applications/
+codesign --sign "Developer ID Application: Your Name (TEAMID)" --timestamp build/MacGenuity-x.y.z.dmg
+xcrun notarytool submit build/MacGenuity-x.y.z.dmg --keychain-profile AC_PROFILE --wait
+xcrun stapler staple build/MacGenuity-x.y.z.dmg
 ```
+
+Developer ID credentials are required for that final signing/notarization step.
 
 ---
 
@@ -265,35 +259,27 @@ When macOS Gatekeeper says
 > «Приложение «MacGenuity.app» повреждено, и его не удаётся открыть»  
 > "MacGenuity.app is damaged and can't be opened. Move it to the Trash."
 
-the binary is **not** damaged. macOS attached the `com.apple.quarantine` extended attribute when the browser downloaded the zip, and the running Gatekeeper refuses to launch quarantined apps that are not notarized by Apple.
+this can indicate Gatekeeper rejecting a non-notarized download. Verify the
+release checksum before proceeding; the message alone does not prove integrity.
 
-### For users — quick workaround
+### For users
 
-If the release zip you downloaded was *not* notarized (this is the case for all `0.2.x` GitHub builds at the moment), use the bundled `install.sh` script:
-
-1. Download both `MacGenuity-x.y.z.zip` and `install.sh` from the GitHub release.
-2. Unpack the zip in the same folder (double-click).
-3. In Terminal, from that folder: `bash install.sh`
-
-The script strips the `com.apple.quarantine` extended attribute that browsers attach to downloads (which Gatekeeper translates into the misleading "the app is damaged" error) and moves the bundle to `/Applications/`. Local-only — does not weaken Gatekeeper for any other app.
-
-If you'd rather do it by hand:
+Current releases are ad-hoc signed and not notarized. After dragging the app
+from the DMG into Applications, follow macOS's security approval flow. If a
+verified download is blocked as damaged, the existing bundle-only workaround is:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/MacGenuity.app
 open /Applications/MacGenuity.app
 ```
 
-### For releasers — the permanent fix
+This affects only MacGenuity. DMG packaging does not replace Developer ID signing
+or notarization. Older ZIP releases can still use `tools/install.sh`.
 
-The only way to ship a release that opens cleanly with no user-side tricks is **Developer ID signing + Apple notarization**. The recipe is in [Distribution build](#distribution-build-release-zip-for-github) above. In short:
+### For releasers
 
-1. Build with a `Developer ID Application` cert (NOT an `Apple Development` cert — those are for local dev only and are rejected by Gatekeeper for downloaded apps).
-2. Submit the zip to `xcrun notarytool`.
-3. Staple the ticket to the `.app` with `xcrun stapler`.
-4. Re-zip the stapled `.app` and upload that.
-
-The Apple Developer Program ($99/year) is the gating requirement — Apple does not notarize binaries signed with free Personal Team or Apple Development certs.
+Use Developer ID signing and Apple notarization as shown in
+[Distribution build](#distribution-build-dmg-for-github).
 
 ---
 
@@ -392,7 +378,12 @@ Some functionality is intentionally restricted to avoid unsafe device operations
 
 ## Changelog
 
-Release history lives in [CHANGELOG.md](CHANGELOG.md).
+Release history lives in [CHANGELOG.md](CHANGELOG.md) and GitHub Releases,
+linked from the app's About pane. Public versions use `major.minor.patch`
+(for example, `0.3.2`): patch releases fix issues, minor releases add features,
+and major releases mark breaking changes. While the major version is zero,
+the app remains under active development. The internal bundle build number is
+kept for macOS and is not displayed in the UI or release titles.
 
 ---
 

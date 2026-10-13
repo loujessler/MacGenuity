@@ -48,6 +48,15 @@ struct MacGenuityApp: App {
         _presetStore = StateObject(wrappedValue: presetStore)
         _history = StateObject(wrappedValue: history)
         _deviceStates = StateObject(wrappedValue: deviceStates)
+
+        // Request permissions at launch, independently of menu rendering.
+        Task { @MainActor in
+            viewModel.setPollInterval(settings.refreshInterval)
+            settings.refreshLaunchAtLoginStatus()
+            await viewModel.requestAccessIfNeeded()
+            viewModel.start()
+            await viewModel.notifier.ensureAuthorized()
+        }
     }
 
     var body: some Scene {
@@ -60,12 +69,6 @@ struct MacGenuityApp: App {
             )
         } label: {
             MenuBarLabel(viewModel: viewModel, settings: settings)
-                .task {
-                    viewModel.setPollInterval(settings.refreshInterval)
-                    settings.refreshLaunchAtLoginStatus()
-                    await viewModel.requestAccessIfNeeded()
-                    viewModel.start()
-                }
                 .onChange(of: settings.refreshInterval) { interval in
                     viewModel.setPollInterval(interval)
                 }

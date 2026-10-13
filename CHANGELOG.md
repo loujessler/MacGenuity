@@ -4,6 +4,20 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-10-13
+
+### Changed
+- Startup now requests Input Monitoring and notification authorization independently of menu-bar view rendering. Permission requests do not wait for a full HID probe; already granted permissions are not requested again. macOS controls whether a previously denied request can display another prompt.
+- About displays only the public semantic version (`0.3.2`), without the internal build number, and links to the release history.
+- The Devices sidebar is contained inside its tab with a resizable divider. It no longer changes the window-level navigation layout or shifts the top settings tabs.
+- Releases ship as a compressed DMG containing `MacGenuity.app` and an Applications shortcut for drag-and-drop installation.
+- DMG packaging checks the source signature, image checksum, mounted app signature, version and Applications shortcut. CI publishes the verified universal DMG.
+
+### Verification and limitations
+- Added startup permission regression checks for granted, unknown and denied HID access, including absence of a blocking probe during authorization.
+- Local build and DMG creation/mount/signature checks pass. Public versions follow `major.minor.patch`; the internal bundle build number remains available to macOS only.
+- The app remains ad-hoc signed and non-notarized. DMG packaging does not remove Gatekeeper or Input Monitoring requirements.
+
 ## [0.3.1] — 2026-10-13
 
 Lighting persistence and settings interaction fixes for Pulsefire mice.

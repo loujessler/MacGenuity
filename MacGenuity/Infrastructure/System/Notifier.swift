@@ -3,7 +3,7 @@
 //  MacGenuity
 //
 //  Wraps UNUserNotificationCenter for low-battery alerts. Stays
-//  side-effect-free until something needs to fire.
+//  Authorization is requested at launch; alerts remain opt-in in settings.
 //
 
 import Foundation
@@ -26,9 +26,12 @@ final class Notifier {
     func ensureAuthorized() async {
         if authorizationRequested { return }
         authorizationRequested = true
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .notDetermined else { return }
         do {
             _ = try await center.requestAuthorization(options: [.alert, .sound])
         } catch {
+            authorizationRequested = false
             logger.warning(.app, "notifications: auth failed: \(error.localizedDescription)")
         }
     }

@@ -10,6 +10,7 @@ private final class FakeDeviceService: DeviceService {
     var battery: BatteryState? = BatteryState(percent: 60, isCharging: false)
     var probeError: HIDError?
     var probeCount = 0
+    var permissionRequests = 0
     var lightingColors: [RGBColor] = []
     var keepaliveCount = 0
     var lightingCommits: [Bool] = []
@@ -19,7 +20,10 @@ private final class FakeDeviceService: DeviceService {
 
     init(fingerprint: DeviceFingerprint) { self.fingerprint = fingerprint }
     func currentAccessState() -> HIDAccessState { access }
-    func requestAccess() async -> HIDAccessState { access }
+    func requestAccess() async -> HIDAccessState {
+        permissionRequests += 1
+        return access
+    }
     func probe() async throws -> DeviceSnapshot {
         probeCount += 1
         if let probeError { throw probeError }
@@ -89,6 +93,16 @@ enum ViewModelTests {
             history: BatteryHistory(defaults: defaults, logger: logger),
             presetStore: PresetStore(defaults: defaults), deviceStates: store,
             quadCast2SStates: QuadCast2SStateStore(defaults: defaults), logger: logger)
+        await viewModel.requestAccessIfNeeded()
+        precondition(service.permissionRequests == 0, "Granted access must not prompt again")
+        service.access = .unknown
+        await viewModel.requestAccessIfNeeded()
+        precondition(service.permissionRequests == 1, "First launch must request HID access")
+        service.access = .denied
+        await viewModel.requestAccessIfNeeded()
+        precondition(service.permissionRequests == 2, "Denied access still needs the OS request path")
+        precondition(service.probeCount == 0, "Startup permission requests must not wait for HID probes")
+        service.access = .granted
         await viewModel.refresh()
         precondition(viewModel.battery?.percent == 60)
         precondition(viewModel.selectedDeviceKey == fingerprint.stableKey)

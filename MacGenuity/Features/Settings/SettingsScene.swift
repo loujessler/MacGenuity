@@ -91,14 +91,12 @@ private struct DevicesPane: View {
     var body: some View {
         let devices = unifiedDevices()
 
-        NavigationSplitView {
+        HSplitView {
             sidebar(devices: devices)
-                .frame(minWidth: 220, idealWidth: 240)
-        } detail: {
+                .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
             detail(for: resolved(in: devices))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .navigationSplitViewStyle(.balanced)
         .onAppear {
             ensureValidSelection(in: devices)
         }
@@ -1313,9 +1311,8 @@ private struct AboutPane: View {
                 .foregroundColor(.accentColor)
             Text("MacGenuity")
                 .font(.title2.weight(.semibold))
-            if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
-               let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
-                Text("v\(version) (\(build))")
+            if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                Text("v\(version)")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -1323,9 +1320,11 @@ private struct AboutPane: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Link("View on GitHub", destination: URL(string: "https://github.com/loujessler/MacGenuity")!)
-                .font(.system(size: 12))
-                .foregroundStyle(.blue)
+            HStack(spacing: 16) {
+                Link("View on GitHub", destination: URL(string: "https://github.com/loujessler/MacGenuity")!)
+                Link("Release notes", destination: URL(string: "https://github.com/loujessler/MacGenuity/releases")!)
+            }
+            .font(.system(size: 12))
 
             VStack(alignment: .leading, spacing: 10) {
                 Divider()

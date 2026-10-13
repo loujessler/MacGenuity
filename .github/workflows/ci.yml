@@ -39,12 +39,12 @@ jobs:
           ARCHS="$(lipo -archs build/MacGenuity.app/Contents/MacOS/MacGenuity)"
           [[ "${ARCHS}" == "x86_64 arm64" || "${ARCHS}" == "arm64 x86_64" ]]
           codesign --verify --deep --strict build/MacGenuity.app
-      - name: Package universal bundle
+      - name: Package and mount-test DMG
         if: matrix.os == 'macos-15-intel'
-        run: ditto -c -k --sequesterRsrc --keepParent build/MacGenuity.app build/MacGenuity-universal.zip
+        run: bash tools/package-dmg.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.os == 'macos-15-intel'
         with:
-          name: MacGenuity-universal
-          path: build/MacGenuity-universal.zip
+          name: MacGenuity-dmg
+          path: build/MacGenuity-*.dmg
           if-no-files-found: error
