@@ -12,8 +12,8 @@
 #   • Strips `com.apple.quarantine` — the extended attribute browsers attach
 #     to downloaded files. macOS Gatekeeper refuses to open quarantined apps
 #     that aren't notarized by Apple, surfacing the misleading
-#     "MacGenuity.app is damaged" dialog. The app is NOT damaged; this
-#     attribute is the only thing standing in the way.
+#     "MacGenuity.app is damaged" dialog. Signature verification below
+#     checks bundle integrity before removing this attribute.
 #
 #   • Copies the bundle into /Applications so it's where macOS expects.
 #

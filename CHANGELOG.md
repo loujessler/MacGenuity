@@ -41,8 +41,10 @@ Reliability and release audit focused on SoloCast and the original Pulsefire Has
 - Builds treat compiler warnings as errors and use an installed macOS 26 SDK when a Command Line Tools installation lacks the SwiftUI macro plugin required by its newer SDK. Explicit `SDKROOT` remains supported.
 - Build temporary icon/entitlement files are cleaned up on failure.
 - No third-party application dependencies were added. Version is 0.3.0, build 5; minimum deployment target remains macOS 13.
+- Local protocol/view-model, QuadCast 2 S and installer rollback tests pass. Native and universal builds pass bundle/signature validation; the release archive is produced by the Intel GitHub Actions runner.
 
 ### Known Issues
+- Physical-device acceptance remains incomplete: the connected original Haste Wireless was identified as VID `03F0`, PID `028E`, but end-to-end control on the new build was blocked by unconfirmed Input Monitoring access. No SoloCast was connected during this audit. Hardware-free tests do not replace these checks.
 - This release is ad-hoc signed, not Developer ID signed or notarized. Gatekeeper approval is still required; the optional installer removes quarantine only from its staged MacGenuity bundle.
 - Hardware-specific features without verified protocols remain unavailable: mouse polling-rate configuration, macros, firmware updates and full NGENUITY feature parity. Experimental mouse effects remain explicitly marked.
 - Identical mice with the same VID/PID still share selection and persisted settings; independent control of multiple identical units is not implemented.
