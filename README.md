@@ -269,14 +269,20 @@ the binary is **not** damaged. macOS attached the `com.apple.quarantine` extende
 
 ### For users — quick workaround
 
-If the release zip you downloaded was *not* notarized (this is the case for all `0.2.x` GitHub builds at the moment), strip the quarantine flag once after install:
+If the release zip you downloaded was *not* notarized (this is the case for all `0.2.x` GitHub builds at the moment), use the bundled `install.sh` script:
+
+1. Download both `MacGenuity-x.y.z.zip` and `install.sh` from the GitHub release.
+2. Unpack the zip in the same folder (double-click).
+3. In Terminal, from that folder: `bash install.sh`
+
+The script strips the `com.apple.quarantine` extended attribute that browsers attach to downloads (which Gatekeeper translates into the misleading "the app is damaged" error) and moves the bundle to `/Applications/`. Local-only — does not weaken Gatekeeper for any other app.
+
+If you'd rather do it by hand:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/MacGenuity.app
 open /Applications/MacGenuity.app
 ```
-
-That's a one-time operation per install. It does not weaken Gatekeeper for any other app.
 
 ### For releasers — the permanent fix
 

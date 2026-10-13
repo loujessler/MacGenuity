@@ -68,6 +68,25 @@ struct DeviceDPIState: Codable, Equatable {
     /// 1-based active profile index.
     var activeProfile: Int
 
+    func normalized() -> DeviceDPIState {
+        var safeLevels = Self.default.levels.map { fallback -> DPILevel in
+            guard var level = levels.first(where: { $0.index == fallback.index }) else {
+                return fallback
+            }
+            level.dpi = (max(50, min(16_000, level.dpi)) / 50) * 50
+            level.color = level.color.clamped()
+            return level
+        }
+        var selected = max(1, min(5, activeProfile))
+        if !safeLevels.contains(where: { $0.enabled }) {
+            safeLevels[selected - 1].enabled = true
+        }
+        if !safeLevels[selected - 1].enabled {
+            selected = safeLevels.first(where: { $0.enabled })?.index ?? selected
+        }
+        return DeviceDPIState(levels: safeLevels, activeProfile: selected)
+    }
+
     static let `default` = DeviceDPIState(
         levels: [
             DPILevel(index: 1, dpi: 400,  color: PresetColor.red.rgb,    enabled: true),
@@ -123,7 +142,7 @@ struct DeviceState: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.lighting = try container.decode(DeviceLightingState.self, forKey: .lighting)
-        self.dpi = try container.decode(DeviceDPIState.self, forKey: .dpi)
+        self.dpi = try container.decode(DeviceDPIState.self, forKey: .dpi).normalized()
         self.buttons = try container.decodeIfPresent(DeviceButtonState.self, forKey: .buttons)
             ?? .default
     }

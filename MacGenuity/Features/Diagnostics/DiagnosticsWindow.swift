@@ -188,11 +188,14 @@ struct DiagnosticsWindow: View {
             lastResponse = nil
             return
         }
-        // Pad / truncate to 64 bytes — the HID transport rejects other sizes.
+        guard bytes.count <= HIDTransport.packetSize else {
+            lastResponseError = "Packet exceeds 64 bytes; nothing was sent."
+            lastResponse = nil
+            return
+        }
+        // Short commands are zero-padded; never silently truncate a command.
         if bytes.count < HIDTransport.packetSize {
             bytes.append(Data(count: HIDTransport.packetSize - bytes.count))
-        } else if bytes.count > HIDTransport.packetSize {
-            bytes = bytes.prefix(HIDTransport.packetSize)
         }
 
         do {

@@ -35,6 +35,8 @@ struct MicrophoneInfo: Identifiable, Equatable {
     let volumePercent: Int?
     let isMuted: Bool?
     let isDefaultInput: Bool
+    var canSetMute: Bool = false
+    var canSetVolume: Bool = false
 
     var displayName: String {
         name.isEmpty ? "HyperX microphone" : name

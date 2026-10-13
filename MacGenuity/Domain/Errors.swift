@@ -33,6 +33,7 @@ enum HIDError: Error, LocalizedError, Equatable {
     case malformedReport(reason: String)
     case invalidPacketSize(Int)
     case notPermitted
+    case unsupportedOperation(String)
 
     var errorDescription: String? {
         switch self {
@@ -56,6 +57,8 @@ enum HIDError: Error, LocalizedError, Equatable {
             return "Invalid outbound packet size: \(size)."
         case .notPermitted:
             return "macOS denied HID access. Grant Input Monitoring permission and try again."
+        case .unsupportedOperation(let operation):
+            return "\(operation) is not supported by this device."
         }
     }
 }

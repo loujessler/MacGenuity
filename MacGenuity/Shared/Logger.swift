@@ -74,7 +74,18 @@ final class FileLogger: LoggerType, ObservableObject {
     static let shared = FileLogger()
 
     let fileURL: URL
-    var minimumLevel: LogLevel = .info
+    private let stateLock = NSLock()
+    private var storedMinimumLevel: LogLevel = .info
+    var minimumLevel: LogLevel {
+        get {
+            stateLock.lock(); defer { stateLock.unlock() }
+            return storedMinimumLevel
+        }
+        set {
+            stateLock.lock(); defer { stateLock.unlock() }
+            storedMinimumLevel = newValue
+        }
+    }
 
     /// Live tail observed by the diagnostics window. Always replaces the
     /// entire array (capped at `tailCapacity`) so SwiftUI gets a single
@@ -133,7 +144,7 @@ final class FileLogger: LoggerType, ObservableObject {
     }
 
     private func assignID() -> UInt64 {
-        // Per-call ID, reasonably unique for SwiftUI.
+        stateLock.lock(); defer { stateLock.unlock() }
         let id = nextID
         nextID &+= 1
         return id
@@ -189,6 +200,8 @@ extension Data {
             .components(separatedBy: .whitespacesAndNewlines).joined()
             .components(separatedBy: ",").joined()
         guard cleaned.count.isMultiple(of: 2), !cleaned.isEmpty else { return nil }
+        guard cleaned.utf8.allSatisfy({ (48...57).contains($0)
+            || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
 
         var result = Data()
         result.reserveCapacity(cleaned.count / 2)

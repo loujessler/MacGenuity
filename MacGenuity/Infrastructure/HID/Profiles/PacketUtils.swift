@@ -36,7 +36,8 @@ enum PacketUtils {
     /// Reject obvious echo / empty / junk responses.
     static func validate(_ data: Data,
                          command: UInt8,
-                         minPayloadLength: Int = 0) throws -> Int
+                         minPayloadLength: Int = 0,
+                         allowEmptyPayload: Bool = false) throws -> Int
     {
         guard let off = findCommandOffset(in: data, command: command) else {
             throw HIDError.unexpectedResponse
@@ -44,7 +45,7 @@ enum PacketUtils {
         let base = data.startIndex
         let payloadStart = min(off + 1, data.count)
         let payloadEnd = min(off + packetSize, data.count)
-        if payloadStart < payloadEnd,
+        if !allowEmptyPayload, payloadStart < payloadEnd,
            data[(base + payloadStart)..<(base + payloadEnd)].allSatisfy({ $0 == 0 }) {
             throw HIDError.malformedReport(reason: "empty payload after command")
         }

@@ -61,6 +61,10 @@ final class DeviceViewModel: ObservableObject {
     /// Last fingerprint we've seen connected. Used to detect device-switch
     /// events and reload per-device state.
     private var lastFingerprintKey: String?
+    private var selectionGeneration: UInt64 = 0
+    private var lightingGeneration: UInt64 = 0
+    private var isRefreshing = false
+    private var refreshPending = false
 
     init(deviceService: DeviceService? = nil,
          audioService: AudioService? = nil,
@@ -93,7 +97,7 @@ final class DeviceViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                await self?.refresh()
+                self?.refreshMicrophones()
             }
         }
     }
@@ -130,13 +134,18 @@ final class DeviceViewModel: ObservableObject {
 
     func stop() {
         pollTask?.cancel(); pollTask = nil
-        keepaliveTask?.cancel(); keepaliveTask = nil
-        Task { [weak self] in await self?.deviceService.disconnect() }
+        cancelLightingTasks()
+        let service = deviceService
+        let castService = quadCast2SService
+        Task {
+            await service.disconnect()
+            await castService.stopLightingEffect()
+        }
         logger.info(.app, "DeviceViewModel stopped")
     }
 
     func setPollInterval(_ interval: TimeInterval) {
-        pollInterval = max(minimumPollInterval, interval)
+        pollInterval = interval.isFinite ? min(900, max(minimumPollInterval, interval)) : 60
         logger.info(.app, "pollInterval=\(pollInterval)")
     }
 
@@ -174,8 +183,26 @@ final class DeviceViewModel: ObservableObject {
     // MARK: - Refresh
 
     func refresh() async {
-        let mics = audioService.connectedMicrophones()
-        self.microphones = mics
+        guard !isRefreshing else {
+            refreshPending = true
+            return
+        }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        repeat {
+            refreshPending = false
+            await refreshOnce()
+        } while refreshPending && !Task.isCancelled
+    }
+
+    private func refreshMicrophones() {
+        microphones = audioService.connectedMicrophones()
+    }
+
+    private func refreshOnce() async {
+        let generation = selectionGeneration
+        refreshMicrophones()
+        let mics = microphones
         // Also keep the device picker fresh — discovery is cheap and
         // doesn't open anything, so it can run on every poll.
         let devices = deviceService.availableDevices()
@@ -188,9 +215,9 @@ final class DeviceViewModel: ObservableObject {
         //   • no selection yet (cold start)  → default to first available
         let availableKeys = Set(devices.map { $0.stableKey })
         if let key = selectedDeviceKey, !availableKeys.contains(key) {
-            selectedDeviceKey = devices.first?.stableKey
-        } else if selectedDeviceKey == nil, let first = devices.first {
-            selectedDeviceKey = first.stableKey
+            cancelLightingTasks()
+            selectedDeviceKey = nil
+            await deviceService.setActiveDevice(nil)
         }
 
         accessState = deviceService.currentAccessState()
@@ -207,6 +234,8 @@ final class DeviceViewModel: ObservableObject {
         }
 
         if accessState == .denied {
+            guard generation == selectionGeneration else { return }
+            clearDeviceState()
             self.status = .permissionRequired
             self.lastError = PermissionError.inputMonitoringDenied.errorDescription
             return
@@ -215,7 +244,10 @@ final class DeviceViewModel: ObservableObject {
         do {
             let snapshot = try await deviceService.probe()
             let newProfile = await deviceService.snapshotProfile()
+            guard generation == selectionGeneration else { return }
             let newKey = newProfile?.fingerprint.stableKey
+            self.activeProfile = newProfile
+            self.selectedDeviceKey = newKey
 
             // Detect device-switch and CLEAR cached state. Without this,
             // unplugging a Pulsefire while a QuadCast remains attached
@@ -224,6 +256,7 @@ final class DeviceViewModel: ObservableObject {
             // capability and its probe returns nil battery, but the
             // previous `self.battery` was never reset.
             if newKey != lastFingerprintKey {
+                cancelLightingTasks()
                 self.info = nil
                 self.battery = nil
                 self.lastError = nil
@@ -239,8 +272,6 @@ final class DeviceViewModel: ObservableObject {
                 }
                 lastFingerprintKey = newKey
             }
-            self.activeProfile = newProfile
-
             if let newInfo = snapshot.info { self.info = newInfo }
             if let battery = snapshot.battery {
                 self.battery = battery
@@ -254,7 +285,7 @@ final class DeviceViewModel: ObservableObject {
                         deviceName: info?.displayName
                     )
                 }
-            } else if newProfile?.capabilities.contains(.battery) != true {
+            } else {
                 // Defensive: if the active profile genuinely has no
                 // battery capability (a microphone, say), make sure the
                 // UI doesn't keep a stale value across a refresh.
@@ -271,10 +302,14 @@ final class DeviceViewModel: ObservableObject {
                 self.status = .connected
             }
         } catch HIDError.notPermitted {
+            guard generation == selectionGeneration else { return }
+            clearDeviceState()
             accessState = .denied
             self.status = .permissionRequired
             self.lastError = PermissionError.inputMonitoringDenied.errorDescription
         } catch HIDError.deviceNotFound {
+            guard generation == selectionGeneration else { return }
+            clearDeviceState()
             self.status = .disconnected
             self.lastError = nil
             self.info = nil
@@ -282,16 +317,35 @@ final class DeviceViewModel: ObservableObject {
             self.activeProfile = nil
             lastFingerprintKey = nil
         } catch {
+            guard generation == selectionGeneration else { return }
+            clearDeviceState()
             self.status = .error(error.localizedDescription)
             self.lastError = error.localizedDescription
         }
     }
 
+    private func cancelLightingTasks() {
+        lightingGeneration &+= 1
+        keepaliveTask?.cancel(); keepaliveTask = nil
+        dpiPreviewRestoreTask?.cancel(); dpiPreviewRestoreTask = nil
+    }
+
+    private func clearDeviceState() {
+        cancelLightingTasks()
+        info = nil
+        battery = nil
+        lastUpdate = nil
+        activeProfile = nil
+        lastFingerprintKey = nil
+    }
+
     // MARK: - Lighting / DPI
 
     func applyLighting(state: DeviceLightingState) async {
-        keepaliveTask?.cancel(); keepaliveTask = nil
-        presetStore.recordColor(state.color)
+        cancelLightingTasks()
+        let fingerprint = activeProfile?.fingerprint
+        let generation = selectionGeneration
+        let lightingRevision = lightingGeneration
 
         // Opacity is software-side: pre-multiply the RGB before sending.
         // This applies to all effects (static, breathing, etc.) and is
@@ -308,7 +362,10 @@ final class DeviceViewModel: ObservableObject {
                 includeHasteProbe: state.includeHasteProbe
             )
             // Persist as the last-applied state for THIS device.
-            if let fp = activeProfile?.fingerprint {
+            guard generation == selectionGeneration,
+                  lightingRevision == lightingGeneration else { return }
+            presetStore.recordColor(state.color)
+            if let fp = fingerprint {
                 deviceStates.record(lighting: state, for: fp)
             }
             lastControlMessage = "Lighting applied"
@@ -350,6 +407,13 @@ final class DeviceViewModel: ObservableObject {
                              brightness: Int,
                              speed: Int) async
     {
+        cancelLightingTasks()
+        await sendLightingFrame(target: target, effect: effect, color: color,
+                                brightness: brightness, speed: speed)
+    }
+
+    private func sendLightingFrame(target: LEDTarget, effect: LEDEffect,
+                                   color: RGBColor, brightness: Int, speed: Int) async {
         do {
             try await deviceService.applyLighting(
                 target: target, effect: effect, color: color,
@@ -381,13 +445,17 @@ final class DeviceViewModel: ObservableObject {
     /// and select the active one in a single batch. Used by the new DPI
     /// pane that mirrors NGENUITY's UX.
     func applyDPIBatch(levels: [DPILevel], activeProfile: Int) async {
-        keepaliveTask?.cancel(); keepaliveTask = nil
+        cancelLightingTasks()
+        let fingerprint = self.activeProfile?.fingerprint
+        let generation = selectionGeneration
+        let state = DeviceDPIState(levels: levels, activeProfile: activeProfile).normalized()
         do {
-            try await deviceService.applyDPIBatch(levels: levels,
-                                                  activeProfile: activeProfile)
-            if let fp = self.activeProfile?.fingerprint {
+            try await deviceService.applyDPIBatch(levels: state.levels,
+                                                  activeProfile: state.activeProfile)
+            guard generation == selectionGeneration else { return }
+            if let fp = fingerprint {
                 deviceStates.record(
-                    dpi: DeviceDPIState(levels: levels, activeProfile: activeProfile),
+                    dpi: state,
                     for: fp
                 )
             }
@@ -404,10 +472,13 @@ final class DeviceViewModel: ObservableObject {
     }
 
     func applyDPI(profile: Int, dpi: Int) async {
-        keepaliveTask?.cancel(); keepaliveTask = nil
+        cancelLightingTasks()
+        let fingerprint = activeProfile?.fingerprint
+        let generation = selectionGeneration
         do {
             try await deviceService.applyDPI(profile: profile, dpi: dpi)
-            if let fp = activeProfile?.fingerprint {
+            guard generation == selectionGeneration else { return }
+            if let fp = fingerprint {
                 deviceStates.record(activeProfile: profile, dpi: dpi, for: fp)
             }
             lastControlMessage = "DPI profile \(profile) set to \(dpi)"
@@ -429,7 +500,7 @@ final class DeviceViewModel: ObservableObject {
         lastControlMessage = ok
             ? "Microphone \(muted ? "muted" : "unmuted")"
             : "Mute not settable (use the on-device tap-to-mute)"
-        await refresh()
+        refreshMicrophones()
     }
 
     /// Set software input volume on a HyperX microphone (0…100 %).
@@ -439,9 +510,11 @@ final class DeviceViewModel: ObservableObject {
         let scalar = Float(max(0, min(100, percent))) / 100.0
         let ok = audioService.setMicrophoneVolume(scalar, deviceID: mic.id)
         if !ok {
-            lastControlMessage = "Volume not settable in software — use the hardware gain dial"
+            lastControlMessage = "Input volume cannot be changed through CoreAudio"
+        } else {
+            lastControlMessage = nil
         }
-        await refresh()
+        refreshMicrophones()
     }
 
     func quadCast2SLightingPreference(
@@ -529,10 +602,13 @@ final class DeviceViewModel: ObservableObject {
     /// then mirror the new mapping into per-device state so reopening
     /// the editor shows what the device actually has.
     func applyButtonAssignments(_ assignments: [ButtonAssignment]) async {
-        keepaliveTask?.cancel(); keepaliveTask = nil
+        cancelLightingTasks()
+        let fingerprint = activeProfile?.fingerprint
+        let generation = selectionGeneration
         do {
             try await deviceService.applyButtonAssignments(assignments)
-            if let fp = activeProfile?.fingerprint {
+            guard generation == selectionGeneration else { return }
+            if let fp = fingerprint {
                 deviceStates.record(buttons: DeviceButtonState(assignments: assignments),
                                     for: fp)
             }
@@ -551,6 +627,9 @@ final class DeviceViewModel: ObservableObject {
     // MARK: - Device selection
 
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async {
+        selectionGeneration &+= 1
+        clearDeviceState()
+        lastControlMessage = nil
         // Remember the user's choice independently of whether a profile
         // resolves it. This way the picker keeps showing the chosen
         // device's name even when (e.g.) the user picks a microphone
@@ -571,8 +650,10 @@ final class DeviceViewModel: ObservableObject {
 
     func selectDPIProfile(_ profile: Int, previewColor: RGBColor) async {
         // Cancel any in-flight restore from a previous click.
-        dpiPreviewRestoreTask?.cancel()
-        dpiPreviewRestoreTask = nil
+        cancelLightingTasks()
+        let generation = selectionGeneration
+        let lightingRevision = lightingGeneration
+        let fingerprint = activeProfile?.fingerprint
 
         // Capture the lighting state to restore BEFORE the flash. If the
         // user has never applied lighting, this is the default (red,
@@ -584,7 +665,9 @@ final class DeviceViewModel: ObservableObject {
             // 1. Apply the DPI select packet (D3 00 + commit). DPI
             //    actually changes here.
             try await deviceService.selectDPIProfile(profile)
-            if let fp = activeProfile?.fingerprint {
+            guard generation == selectionGeneration,
+                  lightingRevision == lightingGeneration else { return }
+            if let fp = fingerprint {
                 deviceStates.update(fp) { $0.dpi.activeProfile = profile }
             }
 
@@ -592,8 +675,8 @@ final class DeviceViewModel: ObservableObject {
             //    Use the preview-grade `streamLightingFrame` so we don't
             //    spawn a haste keepalive or write the colour into preset
             //    history — this is a TRANSIENT flash, not user intent.
-            await streamLightingFrame(
-                target: .logo,
+            await sendLightingFrame(
+                target: restoreState.target,
                 effect: .staticColor,
                 color: previewColor.clamped(),
                 brightness: 100,
@@ -611,16 +694,24 @@ final class DeviceViewModel: ObservableObject {
         //    preview window. Cancellable so consecutive clicks within
         //    the window only restore once at the end.
         let duration = UInt64(Self.dpiPreviewDuration * 1_000_000_000)
+        guard generation == selectionGeneration,
+              lightingRevision == lightingGeneration else { return }
         dpiPreviewRestoreTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: duration)
-            if Task.isCancelled { return }
-            await self?.streamLightingFrame(
-                target: .logo,
+            guard !Task.isCancelled, let self,
+                  self.selectionGeneration == generation,
+                  self.lightingGeneration == lightingRevision else { return }
+            await self.sendLightingFrame(
+                target: restoreState.target,
                 effect: restoreState.effect,
                 color: restoreState.effectiveColor,
                 brightness: restoreState.brightness,
                 speed: restoreState.speed
             )
+            if !Task.isCancelled, restoreState.includeHasteProbe,
+               restoreState.effect == .staticColor {
+                self.startKeepalive(color: restoreState.effectiveColor)
+            }
         }
     }
 
@@ -638,6 +729,7 @@ final class DeviceViewModel: ObservableObject {
                     return
                 } catch {
                     log.warning(.lighting, "keepalive: \(error.localizedDescription)")
+                    return
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }

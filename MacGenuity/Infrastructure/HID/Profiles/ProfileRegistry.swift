@@ -71,7 +71,7 @@ final class ProfileRegistry {
         return best.map { ($0.0, $0.1) }
     }
 
-    private func interfaceBonus(for fp: DeviceFingerprint) -> Double {
+    func interfaceBonus(for fp: DeviceFingerprint) -> Double {
         var bonus = 0.0
         if fp.usagePage == 0xFF13 || fp.usagePage == 0xFF00 { bonus += 0.2 }
         if fp.maxFeature >= PacketUtils.packetSize { bonus += 0.05 }

@@ -31,7 +31,7 @@ struct MenuContent: View {
                 divider; mouseSection
             }
 
-            if !history.samples.isEmpty {
+            if viewModel.battery != nil, !history.samples.isEmpty {
                 divider; batterySection
             }
 
@@ -71,7 +71,11 @@ struct MenuContent: View {
                 row(icon: "computermouse", label: "Connected")
             }
         case .disconnected:
-            row(icon: "computermouse.slash", label: "Mouse not found", muted: true)
+            if viewModel.microphones.isEmpty {
+                row(icon: "powerplug", label: "No supported devices connected", muted: true)
+            } else {
+                row(icon: "mic", label: "Microphone connected")
+            }
         case .permissionRequired:
             row(icon: "lock.shield", label: "Input Monitoring required", muted: true)
         case .error(let msg):
@@ -152,9 +156,14 @@ struct MenuContent: View {
         let reset = Process()
         reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
         reset.arguments = ["reset", "ListenEvent", bundleID]
-        try? reset.run()
-        reset.waitUntilExit()
-        relaunchApp()
+        reset.terminationHandler = { _ in
+            DispatchQueue.main.async { relaunchApp() }
+        }
+        do {
+            try reset.run()
+        } catch {
+            FileLogger.shared.error(.app, "Permission reset failed: \(error.localizedDescription)")
+        }
     }
 
     @ViewBuilder
@@ -242,6 +251,7 @@ struct MenuContent: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
+                .disabled(!mic.canSetMute)
                 .help(muted ? "Switch on to unmute" : "Switch off to mute")
             } else {
                 // Some HyperX mics route mute exclusively through the

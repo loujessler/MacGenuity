@@ -167,6 +167,9 @@ final class HIDTransport {
             )
         }
         if result != kIOReturnSuccess {
+            if result == kIOReturnNotPermitted || result == kIOReturnNotPrivileged {
+                throw HIDError.notPermitted
+            }
             if verbose { logger.warning(.hid, "send \(kind.name) failed result=\(Hex.ioReturn(result))") }
             throw HIDError.writeFailed(result)
         }
@@ -197,7 +200,7 @@ final class HIDTransport {
                 if PacketUtils.findCommandOffset(in: data, command: command) != nil {
                     return data
                 }
-            } else if result == kIOReturnNotPermitted {
+            } else if result == kIOReturnNotPermitted || result == kIOReturnNotPrivileged {
                 throw HIDError.notPermitted
             } else {
                 lastError = result

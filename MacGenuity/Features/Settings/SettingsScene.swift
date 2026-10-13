@@ -225,6 +225,7 @@ private struct DevicesPane: View {
                     viewModel: viewModel,
                     presetStore: presetStore
                 )
+                .id(fp.stableKey)
             case .microphone(let mic):
                 MicrophoneDetail(microphone: mic, viewModel: viewModel)
             }
@@ -450,6 +451,7 @@ private struct LightingSection: View {
     @ObservedObject var presetStore: PresetStore
 
     @State private var effect: LEDEffect = .staticColor
+    @State private var target: LEDTarget = .logo
     @State private var color: RGBColor = PresetColor.red.rgb
     @State private var brightness: Double = 100
     @State private var opacity: Double = 255
@@ -462,6 +464,7 @@ private struct LightingSection: View {
     @State private var presetName: String = ""
 
     @State private var streamTask: Task<Void, Never>?
+    @State private var hydratedState: DeviceLightingState?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -477,6 +480,13 @@ private struct LightingSection: View {
         }
         .onChange(of: color) { newValue in scheduleLiveUpdate(newValue) }
         .onChange(of: opacity) { _ in scheduleLiveUpdate(color) }
+        .onChange(of: brightness) { _ in scheduleLiveUpdate(color) }
+        .onChange(of: speed) { _ in scheduleLiveUpdate(color) }
+        .onChange(of: effect) { _ in scheduleLiveUpdate(color) }
+        .onChange(of: liveStream) { enabled in
+            if enabled { scheduleLiveUpdate(color) } else { streamTask?.cancel() }
+        }
+        .onDisappear { streamTask?.cancel() }
     }
 
     private var modePicker: some View {
@@ -550,6 +560,7 @@ private struct LightingSection: View {
     private var applyRow: some View {
         HStack {
             Button {
+                streamTask?.cancel()
                 Task { await viewModel.applyLighting(state: snapshotState()) }
             } label: {
                 Label("Apply lighting", systemImage: "lightbulb")
@@ -570,7 +581,7 @@ private struct LightingSection: View {
 
     private func snapshotState() -> DeviceLightingState {
         DeviceLightingState(
-            target: .logo,
+            target: target,
             effect: effect,
             color: color,
             brightness: Int(brightness.rounded()),
@@ -593,7 +604,9 @@ private struct LightingSection: View {
                         presetRow(preset)
                     }
                     .onDelete { indices in
-                        for index in indices { presetStore.remove(presetStore.presets[index]) }
+                        for index in indices.sorted(by: >) {
+                            presetStore.remove(presetStore.presets[index])
+                        }
                     }
                 }
                 .listStyle(.bordered)
@@ -608,7 +621,7 @@ private struct LightingSection: View {
                     guard !trimmed.isEmpty else { return }
                     let preset = LightingPreset(
                         name: trimmed,
-                        target: .logo, effect: effect, color: color,
+                        target: target, effect: effect, color: color,
                         brightness: Int(brightness.rounded()),
                         opacity: Int(opacity.rounded()),
                         speed: Int(speed.rounded()),
@@ -639,6 +652,7 @@ private struct LightingSection: View {
             }
             Spacer()
             Button {
+                target = preset.target
                 effect = preset.effect
                 color = preset.color
                 brightness = Double(preset.brightness)
@@ -671,6 +685,7 @@ private struct LightingSection: View {
         .padding(.vertical, 2)
         .contextMenu {
             Button("Load into editor") {
+                target = preset.target
                 effect = preset.effect
                 color = preset.color
                 brightness = Double(preset.brightness)
@@ -685,7 +700,10 @@ private struct LightingSection: View {
     }
 
     private func hydrate() {
+        streamTask?.cancel()
         let s = viewModel.currentDeviceState.lighting
+        hydratedState = s
+        target = s.target
         effect = s.effect
         color = s.color
         brightness = Double(s.brightness)
@@ -695,17 +713,21 @@ private struct LightingSection: View {
     }
 
     private func scheduleLiveUpdate(_ newColor: RGBColor) {
-        guard liveStream else { return }
+        guard liveStream, snapshotState() != hydratedState else { return }
         streamTask?.cancel()
+        hydratedState = snapshotState()
+        let deviceKey = viewModel.activeProfile?.fingerprint.stableKey
+        let selectedTarget = target
         let attenuated = applyOpacity(newColor)
         let e = effect
         let b = Int(brightness.rounded())
         let sp = Int(speed.rounded())
         streamTask = Task { [weak viewModel] in
             try? await Task.sleep(nanoseconds: 30_000_000)
-            if Task.isCancelled { return }
+            guard !Task.isCancelled,
+                  viewModel?.activeProfile?.fingerprint.stableKey == deviceKey else { return }
             await viewModel?.streamLightingFrame(
-                target: .logo, effect: e, color: attenuated,
+                target: selectedTarget, effect: e, color: attenuated,
                 brightness: b, speed: sp
             )
         }
@@ -766,7 +788,13 @@ private struct DPISection: View {
         )
         let enabledBinding = Binding<Bool>(
             get: { levels[index].enabled },
-            set: { levels[index].enabled = $0 }
+            set: { enabled in
+                guard enabled || levels.filter({ $0.enabled }).count > 1 else { return }
+                levels[index].enabled = enabled
+                if !enabled, activeProfile == level.index {
+                    activeProfile = levels.first(where: { $0.enabled })?.index ?? activeProfile
+                }
+            }
         )
 
         return HStack(spacing: 10) {
@@ -783,6 +811,7 @@ private struct DPISection: View {
                     .font(.system(size: 16))
             }
             .buttonStyle(.plain)
+            .disabled(!level.enabled)
             .help(isActive ? "Active profile" : "Make active (applies + flashes colour)")
 
             Text("DPI \(level.index)")
@@ -1104,6 +1133,7 @@ private struct MicrophoneDetail: View {
                         .frame(minWidth: 90, alignment: .leading)
                 }
                 .toggleStyle(.switch)
+                .disabled(!microphone.canSetMute)
             } else {
                 Label("Mute state not exposed by CoreAudio",
                       systemImage: "mic.badge.xmark")
@@ -1129,13 +1159,14 @@ private struct MicrophoneDetail: View {
                             }
                         }
                     ), in: 0...100, step: 1)
+                    .disabled(!microphone.canSetVolume)
                     Text("\(volume)%")
                         .font(.system(size: 11, design: .monospaced))
                         .monospacedDigit()
                         .frame(width: 38, alignment: .trailing)
                 }
             } else {
-                Label("Volume controlled by hardware gain dial",
+                Label("Input volume is not exposed by CoreAudio",
                       systemImage: "dial.medium")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
@@ -1168,7 +1199,7 @@ private struct MicrophoneDetail: View {
     private var castHardwareSection: some View {
         if microphone.isQuadCast2S {
             QuadCast2SAdvancedControls(microphone: microphone, viewModel: viewModel)
-        } else if microphone.isCastFamily {
+        } else if microphone.isCastFamily && !microphone.isSoloCast {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Hardware controls unavailable for this model",
                       systemImage: "info.circle")

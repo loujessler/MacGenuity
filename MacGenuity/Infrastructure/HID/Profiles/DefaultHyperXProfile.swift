@@ -19,6 +19,9 @@ final class DefaultHyperXProfile: DeviceProfile {
     func match(_ fp: DeviceFingerprint) -> Double {
         let known: Set<Int> = [0x0951, 0x03F0]
         let lower = fp.lowercaseProduct
+        // HP and Kingston vendor IDs also identify unrelated keyboards and
+        // storage devices; they are not evidence of this mouse protocol.
+        guard lower.contains("pulsefire") else { return 0 }
 
         // Hard opt-out for non-mouse families. The HyperX VIDs are shared
         // across mice, headsets and microphones; a SoloCast on VID 0x03F0
@@ -93,7 +96,8 @@ final class DefaultHyperXProfile: DeviceProfile {
     }
 
     func parseBattery(_ data: Data) throws -> BatteryState {
-        let off = try PacketUtils.validate(data, command: 0x51, minPayloadLength: 6)
+        let off = try PacketUtils.validate(data, command: 0x51, minPayloadLength: 6,
+                                           allowEmptyPayload: true)
         let base = data.startIndex
         let percent = Int(data[base + off + 4])
         guard (0...100).contains(percent) else {
@@ -137,12 +141,8 @@ final class DefaultHyperXProfile: DeviceProfile {
         //     color) take a 0-based profile in byte 2 (P = 0…4).
         //   • `D3 00 00 01 N` (active-profile select) takes a **1-based**
         //     profile in the payload byte (N = 1…5).
-        //   • `D3 01 00 01 BITS` (enable bitmap) — bit `1 << (5 - profile)`
-        //     for the 1-based profile index. NGENUITY enables 5 profiles
-        //     (`0x1F`); we expose 4 in the UI but enable all five so a
-        //     `selectDPIProfile(5)` call from a future device that has a
-        //     fifth profile slot still works.
-        let zeroBased = UInt8(min(4, max(1, profile)) - 1)   // 0…3
+        //   • `D3 01 00 01 BITS` uses bit `(profile - 1)` per level.
+        let zeroBased = UInt8(min(5, max(1, profile)) - 1)   // 0…4
         let oneBased  = UInt8(min(5, max(1, profile)))       // 1…5
         let safeDPI = min(16_000, max(50, (dpi / 50) * 50))
         let step = safeDPI / 50
@@ -204,13 +204,14 @@ final class DefaultHyperXProfile: DeviceProfile {
     ///   4. `D3 00 00 01 N`     — select active (N 1-based)
     /// Caller wraps with `commitPacket()` (`DE 03 00`).
     func dpiBatchPackets(levels: [DPILevel], activeProfile: Int) -> [ProfilePacket] {
+        let state = DeviceDPIState(levels: levels, activeProfile: activeProfile).normalized()
         // Enable bitmap: bit `(profile - 1)` set means that profile is
         // included in the on-mouse cycle. NGENUITY's pcap only ever
         // showed `0x1F` (all five enabled), so the per-bit mapping had
         // to be inferred — verified empirically: disabling profile 5
         // produced `0x0F`, profile 1 → bit 0, profile 5 → bit 4.
         var bits = 0
-        for level in levels where level.enabled {
+        for level in state.levels where level.enabled {
             let oneBased = max(1, min(5, level.index))
             bits |= 1 << (oneBased - 1)
         }
@@ -222,7 +223,7 @@ final class DefaultHyperXProfile: DeviceProfile {
         ]
 
         // Per-level value + colour, ordered by 1-based index (matches NGENUITY).
-        for level in levels.sorted(by: { $0.index < $1.index }) where level.enabled {
+        for level in state.levels where level.enabled {
             let zeroBased = UInt8(max(0, min(4, level.index - 1)))
             let safeDPI = min(16_000, max(50, (level.dpi / 50) * 50))
             let step = safeDPI / 50
@@ -242,7 +243,7 @@ final class DefaultHyperXProfile: DeviceProfile {
         }
 
         // Select active (1-based per pcap).
-        let oneBased = UInt8(max(1, min(5, activeProfile)))
+        let oneBased = UInt8(state.activeProfile)
         var select = Data(count: PacketUtils.packetSize)
         select[0] = 0xD3; select[3] = 0x01; select[4] = oneBased
         packets.append(ProfilePacket(bytes: select, label: "selectDPIProfile p=\(activeProfile)"))

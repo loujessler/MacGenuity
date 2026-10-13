@@ -14,6 +14,17 @@ SRC_DIR="${ROOT}/${APP_NAME}"
 BUILD_DIR="${ROOT}/build"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 
+# Honor an explicit SDKROOT. Some CLT releases omit SwiftUIMacros while
+# shipping an SDK that requires it; select the installed macOS 26 SDK then.
+SDK_PATH="${SDKROOT:-$(xcrun --show-sdk-path)}"
+DEVELOPER_DIR_PATH="$(xcode-select -p)"
+if [[ -z "${SDKROOT:-}" && "${DEVELOPER_DIR_PATH}" == */CommandLineTools &&
+      ! -f "${DEVELOPER_DIR_PATH}/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" &&
+      -d "${DEVELOPER_DIR_PATH}/SDKs/MacOSX26.sdk" ]]; then
+    SDK_PATH="${DEVELOPER_DIR_PATH}/SDKs/MacOSX26.sdk"
+fi
+echo "Using SDK: ${SDK_PATH}"
+
 # Architecture selection.
 #   • HYPERX_UNIVERSAL=1   → build a fat (universal) binary covering both
 #                            Apple Silicon and Intel. Required for a release
@@ -78,7 +89,9 @@ if [[ -f "${USER_ICNS}" ]]; then
     cp "${USER_ICNS}" "${ICON_OUT}"
 elif [[ -f "${USER_PNG}" ]]; then
     echo "Compiling AppIcon.png → AppIcon.icns"
-    ICONSET_TMP="$(mktemp -d)/AppIcon.iconset"
+    ICON_TMP="$(mktemp -d)"
+    CLEANUP_PATHS+=("${ICON_TMP}")
+    ICONSET_TMP="${ICON_TMP}/AppIcon.iconset"
     mkdir -p "${ICONSET_TMP}"
     # size:filename pairs from Apple's "icon_<W>x<H>[@2x].png" spec.
     for entry in \
@@ -121,6 +134,8 @@ fi
 
 FINAL_BINARY="${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 SWIFTC_COMMON_FLAGS=(
+    -sdk "${SDK_PATH}"
+    -warnings-as-errors
     -framework IOKit
     -framework CoreAudio
     -framework ServiceManagement
@@ -216,7 +231,7 @@ fi
 
 ENT_FILE=""
 if [[ "${ATTACH_DEBUG_ENTITLEMENT}" == "1" ]]; then
-    ENT_FILE="$(mktemp -t macgenuity-ent).plist"
+    ENT_FILE="$(mktemp -t macgenuity-ent)"
     cat > "${ENT_FILE}" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

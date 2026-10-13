@@ -23,6 +23,7 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     private var animationTask: Task<Void, Never>?
     private var animationGeneration: UInt64 = 0
     private var animationError: String?
+    private var operationGeneration: UInt64 = 0
 
     init(logger: LoggerType = FileLogger.shared) {
         self.logger = logger
@@ -80,7 +81,10 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     }
 
     func applyStaticLighting(color: RGBColor, brightness: Int) async throws {
-        await stopLightingEffect()
+        operationGeneration &+= 1
+        let operation = operationGeneration
+        await stopCurrentAnimation()
+        guard operation == operationGeneration else { throw CancellationError() }
         let candidate = try lampArrayCandidate()
         let attributes = (try? loadAttributes(from: candidate.device))
         let reports = QuadCast2SProtocol.staticLightingReports(
@@ -125,7 +129,10 @@ actor QuadCast2SHardwareService: QuadCast2SService {
             return
         }
 
-        await stopLightingEffect()
+        operationGeneration &+= 1
+        let operation = operationGeneration
+        await stopCurrentAnimation()
+        guard operation == operationGeneration else { throw CancellationError() }
         let candidate = try lampArrayCandidate()
         let layout = try loadLayout(from: candidate.device)
         let firstFrame = QuadCast2SEffectRenderer.render(
@@ -168,6 +175,11 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     }
 
     func stopLightingEffect() async {
+        operationGeneration &+= 1
+        await stopCurrentAnimation()
+    }
+
+    private func stopCurrentAnimation() async {
         guard let task = animationTask else { return }
         animationGeneration &+= 1
         animationTask = nil
@@ -177,7 +189,10 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     }
 
     func restoreAutonomousLighting() async throws {
-        await stopLightingEffect()
+        operationGeneration &+= 1
+        let operation = operationGeneration
+        await stopCurrentAnimation()
+        guard operation == operationGeneration else { throw CancellationError() }
         let candidate = try lampArrayCandidate()
         try withOpenDevice(candidate.device) {
             try writeFeatureReport(

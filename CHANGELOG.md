@@ -4,7 +4,9 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-10-13
+
+Reliability and release audit focused on SoloCast and the original Pulsefire Haste Wireless, retaining the compact menu and per-device settings layout. Includes the previously merged QuadCast 2 S work.
 
 ### Added
 - Full QuadCast 2 S LampArray discovery: 108 individually addressable RGBI lamps, live 12 × 9 cylindrical geometry, and device-declared ~30 FPS rate limiting.
@@ -15,7 +17,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Hardware-free protocol and renderer regression suite covering captured descriptors, frame batching, every effect, preference migration, and persistence.
 - Expanded verified QuadCast 2 S packet, geometry, timing, and transport notes in `docs/quadcast-2s-protocol.md`.
 
+### Fixed
+- Haste now wins profile resolution over the generic mouse driver. Its DPI batch delegates to the complete NGENUITY-style bitmap/value/colour/active-slot sequence instead of enabling every slot and selecting the final one.
+- Single-level writes address DPI slot 5 correctly instead of overwriting slot 4. DPI state is normalized to five bounded slots, with at least one enabled and an enabled active slot.
+- A valid 0% battery report is accepted. Failed refreshes and permission loss clear stale battery/profile state.
+- Sidebar enumeration and transport selection rank HID interfaces consistently. Disconnecting a selected device no longer redirects pending control writes to another device.
+- Device changes, explicit lighting edits and shutdown cancel delayed DPI colour restoration and direct-colour keepalive. An older suspended DPI action cannot overwrite a newer lighting edit.
+- Device state is published before editor hydration. Live preview includes brightness, speed and effect changes, preserves the stored LED target, skips initial hydration, and cancels queued frames when an editor closes.
+- Deleting multiple lighting presets no longer shifts indices and crashes or removes the wrong preset.
+- SoloCast mute/volume changes refresh only audio state instead of queuing full mouse HID probes. Controls reflect CoreAudio write capabilities, and default-input changes are observed immediately.
+- SoloCast no longer shows irrelevant RGB-controller or hardware-gain-dial guidance. A microphone-only menu no longer reports that no mouse is connected.
+- Monitoring starts with the menu-bar label, without requiring the user to open the dropdown first.
+- Unsupported HID report types can reach the feature-report fallback; permission errors are propagated correctly. Device-removal callbacks no longer retain the HID service indefinitely.
+- Concurrent log entries receive synchronized IDs. Oversized diagnostics commands are rejected instead of silently truncated; signed hex bytes are rejected.
+- QuadCast 2 S lighting operations invalidate older suspended operations when switching effects or returning control to firmware.
+- Permission reset waits asynchronously and handles launch failures without blocking the UI.
+- The optional installer verifies and stages the bundle before replacing an existing installation, with rollback on replacement failure.
+- Donation-page links use DOM text and HTTPS validation instead of remote HTML interpolation; failed clipboard/fetch operations show accurate status.
+
+### Build and verification
+- Added hardware-free mouse protocol, profile matching, persistence/state normalization and view-model regression tests in `Tests/Regression/run.sh`.
+- Added GitHub Actions checks on Apple Silicon and Intel with pinned checkout, read-only permissions, both test suites and universal-bundle validation.
+- Builds treat compiler warnings as errors and use an installed macOS 26 SDK when a Command Line Tools installation lacks the SwiftUI macro plugin required by its newer SDK. Explicit `SDKROOT` remains supported.
+- Build temporary icon/entitlement files are cleaned up on failure.
+- No third-party application dependencies were added. Version is 0.3.0, build 5; minimum deployment target remains macOS 13.
+
 ### Known Issues
+- This release is ad-hoc signed, not Developer ID signed or notarized. Gatekeeper approval is still required; the optional installer removes quarantine only from its staged MacGenuity bundle.
+- Hardware-specific features without verified protocols remain unavailable: mouse polling-rate configuration, macros, firmware updates and full NGENUITY feature parity. Experimental mouse effects remain explicitly marked.
+- Identical mice with the same VID/PID still share selection and persisted settings; independent control of multiple identical units is not implemented.
 - QuadCast 2 S polar-pattern state and controls are intentionally unavailable. A candidate status-report mapping did not reliably match the physical selector, so the app omits the feature rather than displaying unverified state.
 
 ## [0.2.1] — 2026-05-12

@@ -39,7 +39,7 @@ actor HyperXDeviceService: DeviceService {
     /// loop is the recommended pattern; opening it does not require Input
     /// Monitoring permission.
     private let removalManager: IOHIDManager
-    private var removalContext: Unmanaged<HyperXDeviceService>?
+    private var removalContext: Unmanaged<DeviceRemovalContext>?
 
     init(logger: LoggerType = FileLogger.shared,
          registry: ProfileRegistry = .shared)
@@ -52,10 +52,15 @@ actor HyperXDeviceService: DeviceService {
     }
 
     deinit {
-        IOHIDManagerUnscheduleFromRunLoop(removalManager,
-                                          CFRunLoopGetMain(),
-                                          CFRunLoopMode.defaultMode.rawValue)
-        removalContext?.release()
+        let manager = removalManager
+        let context = removalContext
+        DispatchQueue.main.async(execute: DispatchWorkItem {
+            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(),
+                                              CFRunLoopMode.defaultMode.rawValue)
+            IOHIDManagerRegisterDeviceRemovalCallback(manager, nil, nil)
+            IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            context?.release()
+        })
     }
 
     /// Wires the manager up so it fires `onDeviceRemoved` whenever any
@@ -67,14 +72,14 @@ actor HyperXDeviceService: DeviceService {
             [kIOHIDVendorIDKey as String: vid] as CFDictionary
         }
         IOHIDManagerSetDeviceMatchingMultiple(removalManager, matching as CFArray)
-        let unmanaged = Unmanaged.passRetained(self)
+        let unmanaged = Unmanaged.passRetained(DeviceRemovalContext(service: self))
         removalContext = unmanaged
         IOHIDManagerRegisterDeviceRemovalCallback(
             removalManager,
             { context, _, _, device in
                 guard let context else { return }
-                let service = Unmanaged<HyperXDeviceService>
-                    .fromOpaque(context).takeUnretainedValue()
+                guard let service = Unmanaged<DeviceRemovalContext>
+                    .fromOpaque(context).takeUnretainedValue().service else { return }
                 Task { await service.handleDeviceRemoved(device) }
             },
             unmanaged.toOpaque()
@@ -131,6 +136,10 @@ actor HyperXDeviceService: DeviceService {
                     info = try executeRequest(requests,
                                               transport: transport,
                                               parse: profile.parseInfo)
+                } catch HIDError.notPermitted {
+                    throw HIDError.notPermitted
+                } catch HIDError.deviceNotFound {
+                    throw HIDError.deviceNotFound
                 } catch let error as HIDError {
                     firstError = error
                     logger.warning(.hid, "probe: info failed: \(error.localizedDescription)")
@@ -146,6 +155,10 @@ actor HyperXDeviceService: DeviceService {
                                                      transport: transport,
                                                      parse: profile.parseBattery)
                     return DeviceSnapshot(info: info, battery: battery, error: firstError)
+                } catch HIDError.notPermitted {
+                    throw HIDError.notPermitted
+                } catch HIDError.deviceNotFound {
+                    throw HIDError.deviceNotFound
                 } catch let error as HIDError {
                     logger.warning(.hid, "probe: battery failed: \(error.localizedDescription)")
                     return DeviceSnapshot(info: info, battery: nil, error: error)
@@ -183,6 +196,9 @@ actor HyperXDeviceService: DeviceService {
             throw HIDError.deviceNotFound
         }
 
+        guard profile.capabilities.contains(.lighting) else {
+            throw HIDError.unsupportedOperation("Lighting")
+        }
         if profile.capabilities.contains(.lighting) {
             for packet in profile.lightingPackets(target: target, effect: effect,
                                                   color: color,
@@ -206,7 +222,9 @@ actor HyperXDeviceService: DeviceService {
         guard let transport, let active = activeProfile else {
             throw HIDError.deviceNotFound
         }
-        guard active.capabilities.contains(.dpiProfiles) else { return }
+        guard active.capabilities.contains(.dpiProfiles) else {
+            throw HIDError.unsupportedOperation("DPI")
+        }
 
         let packets = active.dpiPackets(profile: profile, dpi: dpi,
                                         dpiColor: dpiColor(for: profile))
@@ -226,7 +244,9 @@ actor HyperXDeviceService: DeviceService {
         guard let transport, let active = self.activeProfile else {
             throw HIDError.deviceNotFound
         }
-        guard active.capabilities.contains(.dpiProfiles) else { return }
+        guard active.capabilities.contains(.dpiProfiles) else {
+            throw HIDError.unsupportedOperation("DPI")
+        }
 
         let oneBased = UInt8(max(1, min(5, profile)))
         var bytes = Data(count: HIDTransport.packetSize)
@@ -252,8 +272,9 @@ actor HyperXDeviceService: DeviceService {
             let key = String(format: "%04X:%04X",
                              candidate.fingerprint.vendorID,
                              candidate.fingerprint.productID)
-            let score = ProfileRegistry.shared
-                .resolve(for: candidate)?.match(candidate.fingerprint) ?? 0
+            let score = (ProfileRegistry.shared
+                .resolve(for: candidate)?.match(candidate.fingerprint) ?? 0)
+                + ProfileRegistry.shared.interfaceBonus(for: candidate.fingerprint)
             if let existing = bestPerVidPid[key] {
                 if score > existing.1 {
                     bestPerVidPid[key] = (candidate.fingerprint, score)
@@ -286,7 +307,9 @@ actor HyperXDeviceService: DeviceService {
         guard let transport, let active = self.activeProfile else {
             throw HIDError.deviceNotFound
         }
-        guard active.capabilities.contains(.dpiProfiles) else { return }
+        guard active.capabilities.contains(.dpiProfiles) else {
+            throw HIDError.unsupportedOperation("DPI")
+        }
 
         let packets = active.dpiBatchPackets(levels: levels, activeProfile: activeProfile)
         for packet in packets {
@@ -309,7 +332,9 @@ actor HyperXDeviceService: DeviceService {
         guard let transport, let active = self.activeProfile else {
             throw HIDError.deviceNotFound
         }
-        guard active.capabilities.contains(.buttons) else { return }
+        guard active.capabilities.contains(.buttons) else {
+            throw HIDError.unsupportedOperation("Button assignments")
+        }
 
         for assignment in assignments {
             for packet in active.buttonAssignmentPackets(assignment) {
@@ -368,12 +393,7 @@ actor HyperXDeviceService: DeviceService {
     }
 
     func disconnect() async {
-        if let transport {
-            transport.close()
-            self.transport = nil
-        }
-        self.activeProfile = nil
-        self.activeFingerprint = nil
+        resetTransport()
     }
 
     // MARK: - Internals
@@ -397,11 +417,9 @@ actor HyperXDeviceService: DeviceService {
             let filtered = candidates.filter {
                 $0.fingerprint.vendorID == vid && $0.fingerprint.productID == pid
             }
-            if !filtered.isEmpty {
-                candidates = filtered
-            } else {
-                logger.warning(.hid, "preferred device VID=\(Hex.u16(vid)) PID=\(Hex.u16(pid)) not present — falling back to auto-pick")
-            }
+            // A command for a disconnected selection must not reach another mouse.
+            guard !filtered.isEmpty else { throw HIDError.deviceNotFound }
+            candidates = filtered
         }
         guard let pick = registry.selectBestCandidate(candidates, logger: logger) else {
             throw HIDError.deviceNotFound
@@ -422,12 +440,12 @@ actor HyperXDeviceService: DeviceService {
         var lastError: Error?
         for packet in packets {
             do {
-                guard let response = try transmit(packet, transport: transport),
-                      let command = packet.bytes.first else {
+                guard let response = try transmit(packet, transport: transport) else {
                     throw HIDError.unexpectedResponse
                 }
-                _ = try PacketUtils.validate(response, command: command)
                 return try parse(response)
+            } catch HIDError.deviceNotFound {
+                throw HIDError.deviceNotFound
             } catch HIDError.notPermitted {
                 resetTransport()
                 throw HIDError.notPermitted
@@ -448,23 +466,12 @@ actor HyperXDeviceService: DeviceService {
     /// Some IOReturn codes mean the device handle is permanently dead —
     /// the only recovery is to drop it and rediscover.
     ///
-    /// Constants from `IOKit/IOReturn.h`. After replugging a HyperX
-    /// receiver into a different USB port macOS has been observed to
-    /// return `kIOReturnBadArgument` (0xE00002C2) and `kIOReturnUnsupported`
-    /// (0xE00002C7) for writes against the stale handle, in addition to
-    /// the more obviously-fatal codes — so both are included here.
+    /// Unsupported report types must still reach the feature-report
+    /// fallback. Repeated failures are handled by the retry threshold.
     private static func isFatalIOReturn(_ code: Int32) -> Bool {
-        let unsigned = UInt32(bitPattern: code)
-        switch unsigned {
-        case 0xe00002c0,  // kIOReturnNoDevice
-             0xe00002c2,  // kIOReturnBadArgument (observed after replug)
-             0xe00002c7,  // kIOReturnUnsupported  (observed after replug)
-             0xe00002cc,  // kIOReturnNotOpen
-             0xe00002d1,  // kIOReturnNotConnected
-             0xe00002eb,  // kIOReturnAborted
-             0xe00002fc,  // kIOReturnOffline
-             0xe000020f,  // kIOReturnNotResponding
-             0xe00002ed:  // kIOReturnTimeout
+        switch code {
+        case kIOReturnNoDevice, kIOReturnNotOpen, kIOReturnNotAttached,
+             kIOReturnAborted, kIOReturnOffline:
             return true
         default:
             return false
@@ -600,6 +607,14 @@ actor HyperXDeviceService: DeviceService {
         case 4: return PresetColor.green.rgb
         default: return PresetColor.white.rgb
         }
+    }
+}
+
+private final class DeviceRemovalContext {
+    weak var service: HyperXDeviceService?
+
+    init(service: HyperXDeviceService) {
+        self.service = service
     }
 }
 

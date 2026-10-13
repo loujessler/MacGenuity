@@ -40,6 +40,7 @@ final class CoreAudioMicrophoneService: AudioService {
     /// `kAudioHardwarePropertyDevices` listener — fires when devices
     /// are plugged / unplugged.
     private var deviceListListener: InstalledListener?
+    private var defaultInputListener: InstalledListener?
 
     /// Per-device listeners (mute + volume). Keyed by AudioObjectID so
     /// we can deregister precisely when that device vanishes.
@@ -48,6 +49,7 @@ final class CoreAudioMicrophoneService: AudioService {
     init(logger: LoggerType = FileLogger.shared) {
         self.logger = logger
         installDeviceListListener()
+        installDefaultInputListener()
         // Install per-device listeners for whatever's already attached.
         refreshDeviceListeners()
     }
@@ -83,11 +85,13 @@ final class CoreAudioMicrophoneService: AudioService {
                 inputStreamCount: streamCount,
                 volumePercent: volumePercent(for: device),
                 isMuted: muteState(for: device),
-                isDefaultInput: device == defaultInput
+                isDefaultInput: device == defaultInput,
+                canSetMute: isInputPropertySettable(kAudioDevicePropertyMute, for: device),
+                canSetVolume: isInputPropertySettable(kAudioDevicePropertyVolumeScalar, for: device)
             )
         }
 
-        logger.info(.audio, "found \(microphones.count) HyperX input device(s)")
+        logger.debug(.audio, "found \(microphones.count) HyperX input device(s)")
         for mic in microphones {
             logger.debug(.audio, "name='\(mic.name)' streams=\(mic.inputStreamCount) sampleRate=\(mic.sampleRate ?? 0) muted=\(mic.isMuted.map(String.init) ?? "?") default=\(mic.isDefaultInput)")
         }
@@ -95,6 +99,21 @@ final class CoreAudioMicrophoneService: AudioService {
     }
 
     // MARK: - Property listeners (push updates)
+
+    private func installDefaultInputListener() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.postChange()
+        }
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                               &address, .main, block) == noErr {
+            defaultInputListener = InstalledListener(address: address, block: block)
+        }
+    }
 
     /// Watches `kAudioHardwarePropertyDevices` on the system object so
     /// we know when a HyperX mic arrives / leaves. On every change we
@@ -195,6 +214,12 @@ final class CoreAudioMicrophoneService: AudioService {
         for device in Array(deviceListeners.keys) {
             removeListeners(from: device)
         }
+        if let listener = defaultInputListener {
+            var address = listener.address
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                                    &address, .main, listener.block)
+            defaultInputListener = nil
+        }
         if let listener = deviceListListener {
             var address = listener.address
             AudioObjectRemovePropertyListenerBlock(
@@ -215,6 +240,20 @@ final class CoreAudioMicrophoneService: AudioService {
     }
 
     // MARK: - Setters
+
+    private func isInputPropertySettable(_ selector: AudioObjectPropertySelector,
+                                         for device: AudioObjectID) -> Bool {
+        for element in [kAudioObjectPropertyElementMain, 1] {
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: AudioObjectPropertyElement(element))
+            var settable: DarwinBoolean = false
+            if AudioObjectHasProperty(device, &address),
+               AudioObjectIsPropertySettable(device, &address, &settable) == noErr,
+               settable.boolValue { return true }
+        }
+        return false
+    }
 
     @discardableResult
     func setMicrophoneMute(_ muted: Bool, deviceID: UInt32) -> Bool {
@@ -379,7 +418,8 @@ final class CoreAudioMicrophoneService: AudioService {
         guard let v = scalarInputProperty(kAudioDevicePropertyVolumeScalar, for: device) else {
             return nil
         }
-        return Int((v * 100).rounded())
+        guard v.isFinite else { return nil }
+        return Int((max(0, min(1, v)) * 100).rounded())
     }
 
     private func muteState(for device: AudioObjectID) -> Bool? {

@@ -121,13 +121,13 @@
       if (scheme) {
         const url = scheme + ":" + address;
 
-        // пробуем открыть wallet
+        // Try the registered wallet handler first.
         const iframe = document.createElement("iframe");
         iframe.style.display = "none";
         iframe.src = url;
         document.body.appendChild(iframe);
 
-        // fallback через timeout
+        // Fall back to the public explorer.
         setTimeout(() => {
           document.body.removeChild(iframe);
           openExplorer(address);
@@ -149,7 +149,7 @@
       }
 
       if (url) {
-        window.open(url, "_blank");
+        window.open(url, "_blank", "noopener,noreferrer");
       }
     }
 
@@ -170,9 +170,13 @@
 
       const copy = document.createElement("button");
       copy.innerText = "Copy";
-      copy.onclick = () => {
-        navigator.clipboard.writeText(address);
-        copy.innerText = "✓";
+      copy.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(address);
+          copy.innerText = "✓";
+        } catch {
+          copy.innerText = "Copy failed";
+        }
         setTimeout(() => (copy.innerText = "Copy"), 1000);
       };
 
@@ -196,7 +200,10 @@
     }
 
     fetch("https://raw.githubusercontent.com/loujessler/MacGenuity/main/MacGenuity/Resources/donations.json")
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error("Donation configuration unavailable");
+        return res.json();
+      })
       .then(data => {
         const root = document.getElementById("donations");
 
@@ -213,11 +220,20 @@
         );
 
         if (data.donation_page) {
+          const url = new URL(data.donation_page);
+          if (url.protocol !== "https:") return;
           const link = document.createElement("div");
           link.className = "footer";
-          link.innerHTML = `<a href="${data.donation_page}">More options</a>`;
+          const anchor = document.createElement("a");
+          anchor.href = url.href;
+          anchor.textContent = "More options";
+          link.appendChild(anchor);
           root.appendChild(link);
         }
+      })
+      .catch(() => {
+        const root = document.getElementById("donations");
+        root.textContent = "Donation details are unavailable. Please try again later.";
       });
   </script>
 </body>

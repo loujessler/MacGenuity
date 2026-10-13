@@ -44,21 +44,17 @@ struct MacGenuityApp: App {
                 presetStore: presetStore,
                 history: history
             )
-            .task {
-                viewModel.setPollInterval(settings.refreshInterval)
-                settings.refreshLaunchAtLoginStatus()
-                // Show the TCC prompt up-front on first launch — without
-                // this, `currentState()` returns .unknown forever until
-                // the user opens System Settings manually.
-                await viewModel.requestAccessIfNeeded()
-                viewModel.start()
-                await viewModel.refresh()
-            }
-            .onChange(of: settings.refreshInterval) { interval in
-                viewModel.setPollInterval(interval)
-            }
         } label: {
             MenuBarLabel(viewModel: viewModel, settings: settings)
+                .task {
+                    viewModel.setPollInterval(settings.refreshInterval)
+                    settings.refreshLaunchAtLoginStatus()
+                    await viewModel.requestAccessIfNeeded()
+                    viewModel.start()
+                }
+                .onChange(of: settings.refreshInterval) { interval in
+                    viewModel.setPollInterval(interval)
+                }
         }
         .menuBarExtraStyle(.window)
 

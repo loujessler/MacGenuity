@@ -21,12 +21,12 @@ final class PulsefireHasteProfile: DeviceProfile {
 
     func match(_ fp: DeviceFingerprint) -> Double {
         let lower = fp.lowercaseProduct
-        guard lower.contains("pulsefire") || lower.contains("haste") else { return 0 }
+        guard lower.contains("pulsefire"), lower.contains("haste") else { return 0 }
 
-        var score = 0.7  // beats DefaultHyperXProfile when product name contains "haste"
+        var score = 0.85
         if fp.usagePage == 0xFF13 || fp.usagePage == 0xFF00 { score += 0.1 }
         if HIDDeviceFinder.hyperxVendorIDs.contains(fp.vendorID) { score += 0.1 }
-        return min(score, 0.95)
+        return min(score, 0.99)
     }
 
     func infoRequests() -> [ProfilePacket]    { fallback.infoRequests() }
@@ -43,6 +43,10 @@ final class PulsefireHasteProfile: DeviceProfile {
 
     func dpiPackets(profile: Int, dpi: Int, dpiColor: RGBColor) -> [ProfilePacket] {
         fallback.dpiPackets(profile: profile, dpi: dpi, dpiColor: dpiColor)
+    }
+
+    func dpiBatchPackets(levels: [DPILevel], activeProfile: Int) -> [ProfilePacket] {
+        fallback.dpiBatchPackets(levels: levels, activeProfile: activeProfile)
     }
 
     func hasteSetupPacket() -> ProfilePacket?  { fallback.hasteSetupPacket() }
