@@ -41,6 +41,10 @@ Icon?
 *.swo
 *~
 
+# BMAD user preferences and Python caches
+/_bmad/config.user.toml
+__pycache__/
+
 # Logs / dumps
 *.log
 crash.log
