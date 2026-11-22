@@ -6,6 +6,8 @@ private final class SilentLogger: LoggerType {
 
 private final class FakeDeviceService: DeviceService {
     var fingerprint: DeviceFingerprint
+    var devices: [DeviceFingerprint]
+    var selections: [String?] = []
     var access: HIDAccessState = .granted
     var battery: BatteryState? = BatteryState(percent: 60, isCharging: false)
     var probeError: HIDError?
@@ -18,7 +20,10 @@ private final class FakeDeviceService: DeviceService {
     var selectionGate: CheckedContinuation<Void, Never>?
     var delaySelection = false
 
-    init(fingerprint: DeviceFingerprint) { self.fingerprint = fingerprint }
+    init(fingerprint: DeviceFingerprint) {
+        self.fingerprint = fingerprint
+        self.devices = [fingerprint]
+    }
     func currentAccessState() -> HIDAccessState { access }
     func requestAccess() async -> HIDAccessState {
         permissionRequests += 1
@@ -29,8 +34,9 @@ private final class FakeDeviceService: DeviceService {
         if let probeError { throw probeError }
         return DeviceSnapshot(info: nil, battery: battery, error: nil)
     }
-    func availableDevices() -> [DeviceFingerprint] { [fingerprint] }
+    func availableDevices() -> [DeviceFingerprint] { devices }
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async {
+        selections.append(fingerprint?.stableKey)
         if let fingerprint { self.fingerprint = fingerprint }
     }
     func snapshotProfile() async -> ActiveProfileSnapshot? {
@@ -80,7 +86,16 @@ private final class FakeQuadCastService: QuadCast2SService {
 
 @MainActor
 enum ViewModelTests {
-    static func run(fingerprint: DeviceFingerprint) async throws {
+    private static func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<150 {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        preconditionFailure("Timed out waiting for an automatic device refresh")
+    }
+
+    static func run(fingerprint: DeviceFingerprint, soloCast: DeviceFingerprint,
+                    unrelated: DeviceFingerprint) async throws {
         let suite = "MacGenuity.Tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -103,9 +118,41 @@ enum ViewModelTests {
         precondition(service.permissionRequests == 2, "Denied access still needs the OS request path")
         precondition(service.probeCount == 0, "Startup permission requests must not wait for HID probes")
         service.access = .granted
+        service.devices = [unrelated, soloCast]
+        await viewModel.refresh()
+        precondition(viewModel.status == .disconnected && !viewModel.microphones.isEmpty)
+        precondition(service.probeCount == 0, "Microphones and unrelated HID devices must not receive mouse probes")
+        service.devices.append(fingerprint)
         await viewModel.refresh()
         precondition(viewModel.battery?.percent == 60)
         precondition(viewModel.selectedDeviceKey == fingerprint.stableKey)
+        precondition(service.selections == [fingerprint.stableKey])
+        let otherMouse = DeviceFingerprint(vendorID: fingerprint.vendorID, productID: 0x1234,
+            product: "HyperX Pulsefire Dart", usagePage: 0xFF00, usage: 1,
+            maxInput: 64, maxOutput: 64, maxFeature: 64)
+        service.devices.insert(otherMouse, at: 0)
+        await viewModel.refresh()
+        precondition(service.selections == [fingerprint.stableKey], "A second mouse must not steal the active connection")
+        service.devices.removeAll { $0 == fingerprint }
+        await viewModel.refresh()
+        precondition(viewModel.activeProfile?.fingerprint == otherMouse, "Unplugging the active mouse must select the remaining mouse")
+        service.devices = [soloCast, unrelated]
+        await viewModel.refresh()
+        precondition(viewModel.activeProfile == nil && viewModel.battery == nil && viewModel.selectedDeviceKey == nil)
+        viewModel.start()
+        service.devices.append(fingerprint)
+        NotificationCenter.default.post(name: .hidDevicesChanged, object: nil)
+        try await waitUntil { viewModel.activeProfile != nil }
+        precondition(viewModel.activeProfile?.fingerprint == fingerprint, "Reconnecting a mouse must not require a UI selection")
+        service.devices = [soloCast]
+        NotificationCenter.default.post(name: .hidDevicesChanged, object: nil)
+        try await waitUntil { viewModel.activeProfile == nil }
+        precondition(viewModel.activeProfile == nil && viewModel.microphones.count == 1,
+                     "A receiver removal must refresh before the next polling interval")
+        service.devices.append(fingerprint)
+        NotificationCenter.default.post(name: .hidDevicesChanged, object: nil)
+        try await waitUntil { viewModel.activeProfile != nil }
+        precondition(viewModel.activeProfile?.fingerprint == fingerprint)
         let probes = service.probeCount
         await viewModel.setMicrophoneMute(true, for: audio.microphones[0])
         await viewModel.setMicrophoneVolume(50, for: audio.microphones[0])

@@ -40,10 +40,6 @@ struct MenuContent: View {
                 divider; microphoneSection
             }
 
-            if let active = viewModel.activeProfile {
-                divider; profileBadge(active)
-            }
-
             divider; actionsSection
         }
         .padding(.vertical, 6)
@@ -265,24 +261,6 @@ struct MenuContent: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)
-    }
-
-    private func profileBadge(_ active: ActiveProfileSnapshot) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "puzzlepiece.extension")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(active.displayName).font(.system(size: 11, weight: .medium))
-                Text("\(active.capabilities.labels.joined(separator: " · "))")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 2)
     }
 
     private var actionsSection: some View {

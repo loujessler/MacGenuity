@@ -23,14 +23,11 @@ struct SettingsScene: View {
 
     var body: some View {
         TabView {
-            GeneralPane(settings: settings)
-                .tabItem { Label("General", systemImage: "gearshape") }
-
             DevicesPane(viewModel: viewModel, presetStore: presetStore)
                 .tabItem { Label("Devices", systemImage: "externaldrive.connected.to.line.below") }
 
-            ProfilesPane(viewModel: viewModel)
-                .tabItem { Label("Profiles", systemImage: "puzzlepiece.extension") }
+            GeneralPane(settings: settings)
+                .tabItem { Label("General", systemImage: "gearshape") }
 
             AboutPane()
                 .tabItem { Label("About", systemImage: "info.circle") }
@@ -96,36 +93,40 @@ private struct DevicesPane: View {
     @ObservedObject var viewModel: DeviceViewModel
     @ObservedObject var presetStore: PresetStore
 
-    /// Locally-tracked sidebar selection. Stored as the `ConfigurableDevice.id`
-    /// string so the value survives reorderings of `availableDevices` /
-    /// `microphones` between refreshes.
-    @State private var selection: String?
+    @State private var browsedDeviceID: String?
 
     var body: some View {
         let devices = unifiedDevices()
+        let mouse = devices.first {
+            guard case .hid(let fp) = $0 else { return false }
+            return fp.stableKey == viewModel.selectedDeviceKey
+        }
+        let current = devices.first { $0.id == browsedDeviceID } ?? mouse ?? devices.first
 
         HSplitView {
-            sidebar(devices: devices)
-                .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
-            detail(for: resolved(in: devices))
+            sidebar(devices: devices, selection: Binding(
+                get: { current?.id },
+                set: { id in
+                    guard let device = devices.first(where: { $0.id == id }) else { return }
+                    browsedDeviceID = id
+                    if case .hid(let fp) = device, viewModel.registry.supportsMouseControls(fp),
+                       viewModel.selectedDeviceKey != fp.stableKey {
+                        Task { await viewModel.setActiveDevice(fp) }
+                    }
+                }
+            ))
+            .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
+            detail(for: current)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .onAppear {
-            ensureValidSelection(in: devices)
-        }
-        .onChange(of: viewModel.availableDevices) { _ in
-            let updated = unifiedDevices()
-            ensureValidSelection(in: updated)
-        }
-        .onChange(of: viewModel.microphones) { _ in
-            let updated = unifiedDevices()
-            ensureValidSelection(in: updated)
+        .onChange(of: devices.map(\.id)) { ids in
+            if let browsedDeviceID, !ids.contains(browsedDeviceID) { self.browsedDeviceID = nil }
         }
     }
 
     // MARK: Sidebar
 
-    private func sidebar(devices: [ConfigurableDevice]) -> some View {
+    private func sidebar(devices: [ConfigurableDevice], selection: Binding<String?>) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Text("Connected").font(.system(size: 11, weight: .semibold))
@@ -146,7 +147,7 @@ private struct DevicesPane: View {
             if devices.isEmpty {
                 emptySidebarState
             } else {
-                List(selection: $selection) {
+                List(selection: selection) {
                     ForEach(ConfigurableDevice.Category.allCases, id: \.self) { category in
                         let group = devices.filter { $0.category == category }
                         if !group.isEmpty {
@@ -160,9 +161,6 @@ private struct DevicesPane: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .onChange(of: selection) { newValue in
-                    handleSelectionChange(to: newValue, in: devices)
-                }
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -197,7 +195,7 @@ private struct DevicesPane: View {
             Text("No HyperX devices connected")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("Plug a device in and press Refresh.")
+            Text("Connect a mouse or microphone to get started.")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -208,15 +206,8 @@ private struct DevicesPane: View {
 
     private func subtitle(for device: ConfigurableDevice) -> String? {
         switch device {
-        case .hid(let fp):
-            // Show capabilities of the resolved profile — that's what the
-            // user actually gets to control. Fall back to VID/PID.
-            if let active = viewModel.activeProfile,
-               active.fingerprint.stableKey == fp.stableKey
-            {
-                return active.capabilities.labels.joined(separator: " · ")
-            }
-            return "\(Hex.u16(fp.vendorID))/\(Hex.u16(fp.productID))"
+        case .hid:
+            return nil
         case .microphone(let mic):
             if mic.isDefaultInput { return "Default input" }
             if let muted = mic.isMuted { return muted ? "Muted" : "Live" }
@@ -247,17 +238,12 @@ private struct DevicesPane: View {
 
     private var placeholder: some View {
         VStack(spacing: 10) {
-            Image(systemName: "sidebar.left")
+            Image(systemName: "cable.connector")
                 .font(.system(size: 36))
                 .foregroundStyle(.tertiary)
-            Text("Pick a device on the left")
+            Text("Waiting for a device")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-            Text("Each device exposes only the controls its profile supports — there's no separate Lighting or DPI tab.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -283,32 +269,7 @@ private struct DevicesPane: View {
             return .hid(fp)
         }
 
-        return hids + mics
-    }
-
-    private func resolved(in devices: [ConfigurableDevice]) -> ConfigurableDevice? {
-        guard let id = selection else { return devices.first }
-        return devices.first(where: { $0.id == id }) ?? devices.first
-    }
-
-    private func ensureValidSelection(in devices: [ConfigurableDevice]) {
-        if let id = selection, devices.contains(where: { $0.id == id }) { return }
-        selection = devices.first?.id
-        if let first = devices.first {
-            handleSelectionChange(to: first.id, in: devices)
-        }
-    }
-
-    /// When the user picks a HID device, push that choice down to the view
-    /// model so subsequent control commands target it. Microphones don't
-    /// have an "active device" concept — they're informational only.
-    private func handleSelectionChange(to id: String?, in devices: [ConfigurableDevice]) {
-        guard let id, let device = devices.first(where: { $0.id == id }) else { return }
-        if case .hid(let fp) = device,
-           viewModel.selectedDeviceKey != fp.stableKey
-        {
-            Task { await viewModel.setActiveDevice(fp) }
-        }
+        return mics + hids
     }
 }
 
@@ -347,12 +308,8 @@ private struct HIDDeviceDetail: View {
                                            fingerprint: fingerprint)
                         }
                     }
-                    let supported: DeviceCapabilities = [.lighting, .dpiProfiles, .battery, .buttons]
-                    if active.capabilities.intersection(supported).isEmpty {
-                        noControlsNotice(profileName: active.displayName)
-                    }
                 } else {
-                    profileResolutionNotice
+                    connectionStatus
                 }
             }
             .padding(20)
@@ -361,28 +318,9 @@ private struct HIDDeviceDetail: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Image(systemName: deviceIcon)
-                    .font(.system(size: 22))
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(fingerprint.product.isEmpty ? "Unnamed HyperX" : fingerprint.product)
-                        .font(.system(size: 16, weight: .semibold))
-                    Text("\(Hex.u16(fingerprint.vendorID)) / \(Hex.u16(fingerprint.productID))")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-            }
-            if let active = viewModel.activeProfile,
-               active.fingerprint.stableKey == fingerprint.stableKey
-            {
-                Text("Profile: \(active.displayName)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-        }
+        Label(fingerprint.product.isEmpty ? "HyperX device" : fingerprint.product,
+              systemImage: deviceIcon)
+            .font(.system(size: 16, weight: .semibold))
     }
 
     private var deviceIcon: String {
@@ -392,33 +330,22 @@ private struct HIDDeviceDetail: View {
         return "computermouse"
     }
 
-    private var profileResolutionNotice: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Profile not active for this interface",
-                  systemImage: "exclamationmark.triangle")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.orange)
-            Text("This device is detected, but the selected HID interface isn't the one MacGenuity controls (e.g. it's a secondary mouse interface). Pick the device again from the sidebar — the next probe will resolve a profile.")
-                .font(.system(size: 11))
+    @ViewBuilder
+    private var connectionStatus: some View {
+        if !viewModel.registry.supportsMouseControls(fingerprint) {
+            Text("Settings are unavailable for this device.")
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        } else if viewModel.accessState == .denied {
+            Button("Open Input Monitoring Settings…", action: viewModel.openInputMonitoringSettings)
+        } else if viewModel.selectedDeviceKey == fingerprint.stableKey,
+                  case .error(let message) = viewModel.status {
+            Text(message).foregroundStyle(.secondary)
+        } else if viewModel.selectedDeviceKey == fingerprint.stableKey,
+                  viewModel.status == .disconnected {
+            Text("Waiting for the mouse receiver.").foregroundStyle(.secondary)
+        } else {
+            ProgressView("Connecting to mouse…").controlSize(.small)
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
-    }
-
-    private func noControlsNotice(profileName: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("No controls available", systemImage: "checkmark.seal")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text("\(profileName) is recognised but doesn't expose any controls MacGenuity can drive yet (lighting, DPI, etc.). The device shows up here so you can confirm detection — protocol support can be added by contributing a profile.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
     }
 }
 
@@ -818,7 +745,7 @@ private struct DPISection: View {
             }
             .buttonStyle(.plain)
             .disabled(!level.enabled)
-            .help(isActive ? "Active profile" : "Make active (applies + flashes colour)")
+            .help(isActive ? "Active DPI level" : "Make active (applies + flashes colour)")
 
             Text("DPI \(level.index)")
                 .font(.system(size: 12, weight: isActive ? .semibold : .regular))
@@ -842,7 +769,7 @@ private struct DPISection: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
-                .help("Enable / disable this profile in the on-mouse DPI cycle")
+                .help("Enable / disable this level in the on-mouse DPI cycle")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -867,7 +794,7 @@ private struct DPISection: View {
         return ColorPicker("", selection: binding, supportsOpacity: false)
             .labelsHidden()
             .frame(width: 36, height: 22)
-            .help("Indicator colour for this DPI profile")
+            .help("Indicator colour for this DPI level")
     }
 
     private var footer: some View {
@@ -1266,49 +1193,6 @@ private struct MicrophoneDetail: View {
                 .truncationMode(.middle)
             Spacer(minLength: 0)
         }
-    }
-}
-
-// MARK: - Profiles
-
-private struct ProfilesPane: View {
-    @ObservedObject var viewModel: DeviceViewModel
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Registered device profiles").font(.headline)
-                ForEach(ProfileRegistry.shared.profiles, id: \.identifier) { profile in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(profile.displayName).font(.system(size: 12, weight: .medium))
-                            Spacer()
-                            if viewModel.activeProfile?.identifier == profile.identifier {
-                                Label("active", systemImage: "checkmark.seal")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.green)
-                            }
-                        }
-                        Text("id: \(profile.identifier) · author: \(profile.author)")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        Text(profile.capabilities.labels.joined(separator: " · "))
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.gray.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                Text("Add a profile via PROFILES.md in Infrastructure/HID/Profiles/.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 

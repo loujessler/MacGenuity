@@ -4,6 +4,13 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-11-22
+
+- Settings opens on Devices and shows the connected mouse's controls. The technical Profiles tab and the driver badge in the menu bar have been removed. DPI levels and saved lighting presets remain available.
+- Connecting or unplugging a HyperX receiver triggers device discovery immediately. A connected SoloCast or another detection-only HID device no longer takes the mouse's place. Viewing microphone settings leaves mouse controls connected.
+- Discovery and the HID connection use the same interface ranking, including a stable tie-break for composite receivers. When different supported mouse models are attached, the current mouse stays selected until it is disconnected or another mouse is chosen.
+- The device pane now shows connection progress, permission actions or an unavailable state instead of asking the user to reselect a driver.
+
 ## [0.4.0] — 2026-11-22
 
 - Check for a new stable version from the menu bar or Settings → General. Sparkle downloads the update from GitHub Releases and handles installation and relaunch.

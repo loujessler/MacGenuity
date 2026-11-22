@@ -17,7 +17,7 @@ actor HyperXDeviceService: DeviceService {
     private(set) var activeProfile: DeviceProfile?
     private(set) var activeFingerprint: DeviceFingerprint?
 
-    /// User-selected device. When set, `ensureTransport` only considers
+    /// Current mouse target. When set, `ensureTransport` only considers
     /// candidates with matching VID:PID. When `nil` the service auto-picks
     /// the highest-scoring available device (legacy behaviour).
     private var preferredVendorID: Int?
@@ -33,9 +33,8 @@ actor HyperXDeviceService: DeviceService {
     private var consecutiveFailures = 0
     private let consecutiveFailureThreshold = 3
 
-    /// Long-lived manager used purely for the device-removal callback so
-    /// we can drop the cached transport synchronously when the user yanks
-    /// the receiver. Keeping a single manager scheduled on the main run
+    /// Long-lived manager for receiver attachment and removal events.
+    /// Keeping a single manager scheduled on the main run
     /// loop is the recommended pattern; opening it does not require Input
     /// Monitoring permission.
     private let removalManager: IOHIDManager
@@ -57,6 +56,7 @@ actor HyperXDeviceService: DeviceService {
         DispatchQueue.main.async(execute: DispatchWorkItem {
             IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(),
                                               CFRunLoopMode.defaultMode.rawValue)
+            IOHIDManagerRegisterDeviceMatchingCallback(manager, nil, nil)
             IOHIDManagerRegisterDeviceRemovalCallback(manager, nil, nil)
             IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
             context?.release()
@@ -74,13 +74,23 @@ actor HyperXDeviceService: DeviceService {
         IOHIDManagerSetDeviceMatchingMultiple(removalManager, matching as CFArray)
         let unmanaged = Unmanaged.passRetained(DeviceRemovalContext(service: self))
         removalContext = unmanaged
+        IOHIDManagerRegisterDeviceMatchingCallback(
+            removalManager,
+            { _, _, _, _ in
+                NotificationCenter.default.post(name: .hidDevicesChanged, object: nil)
+            },
+            nil
+        )
         IOHIDManagerRegisterDeviceRemovalCallback(
             removalManager,
             { context, _, _, device in
                 guard let context else { return }
                 guard let service = Unmanaged<DeviceRemovalContext>
                     .fromOpaque(context).takeUnretainedValue().service else { return }
-                Task { await service.handleDeviceRemoved(device) }
+                Task {
+                    await service.handleDeviceRemoved(device)
+                    NotificationCenter.default.post(name: .hidDevicesChanged, object: nil)
+                }
             },
             unmanaged.toOpaque()
         )
@@ -268,40 +278,22 @@ actor HyperXDeviceService: DeviceService {
 
     func availableDevices() -> [DeviceFingerprint] {
         // Keep synchronous IOKit enumeration off the UI actor.
-        let candidates = HIDDeviceFinder.discoverCandidates(logger: FileLogger.shared)
-
-        // De-duplicate by VID:PID; pick the candidate that best matches
-        // a registered profile as the representative for each device.
-        var bestPerVidPid: [String: (DeviceFingerprint, Double)] = [:]
-        for candidate in candidates {
-            let key = String(format: "%04X:%04X",
-                             candidate.fingerprint.vendorID,
-                             candidate.fingerprint.productID)
-            let score = (ProfileRegistry.shared
-                .resolve(for: candidate)?.match(candidate.fingerprint) ?? 0)
-                + ProfileRegistry.shared.interfaceBonus(for: candidate.fingerprint)
-            if let existing = bestPerVidPid[key] {
-                if score > existing.1 {
-                    bestPerVidPid[key] = (candidate.fingerprint, score)
-                }
-            } else {
-                bestPerVidPid[key] = (candidate.fingerprint, score)
-            }
+        let devices = HIDDeviceFinder.discoverCandidates(logger: logger).map(\.fingerprint)
+        let groups = Dictionary(grouping: devices) { ($0.vendorID << 16) | $0.productID }
+        return groups.values.compactMap { registry.preferredInterface(in: $0) }.sorted {
+            ($0.product, $0.stableKey) < ($1.product, $1.stableKey)
         }
-        return bestPerVidPid.values
-            .map { $0.0 }
-            .sorted { $0.product < $1.product }
     }
 
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async {
         if let fp = fingerprint {
             preferredVendorID = fp.vendorID
             preferredProductID = fp.productID
-            logger.info(.hid, "user selected device VID=\(Hex.u16(fp.vendorID)) PID=\(Hex.u16(fp.productID)) (\(fp.product))")
+            logger.info(.hid, "selected device VID=\(Hex.u16(fp.vendorID)) PID=\(Hex.u16(fp.productID)) (\(fp.product))")
         } else {
             preferredVendorID = nil
             preferredProductID = nil
-            logger.info(.hid, "user cleared device selection — auto-pick")
+            logger.info(.hid, "cleared device selection — auto-pick")
         }
         // Drop the cached transport so the next call rediscovers.
         resetTransport()
@@ -372,7 +364,7 @@ actor HyperXDeviceService: DeviceService {
     nonisolated func diagnosticsCandidates() -> [DiagnosticsCandidate] {
         let candidates = HIDDeviceFinder.discoverCandidates(logger: FileLogger.shared)
         return candidates.map { c in
-            let resolved = ProfileRegistry.shared.resolve(for: c)
+            let resolved = ProfileRegistry.shared.resolve(for: c.fingerprint)
             return DiagnosticsCandidate(
                 fingerprint: c.fingerprint,
                 summary: c.summary,
@@ -426,16 +418,18 @@ actor HyperXDeviceService: DeviceService {
             guard !filtered.isEmpty else { throw HIDError.deviceNotFound }
             candidates = filtered
         }
-        guard let pick = registry.selectBestCandidate(candidates, logger: logger) else {
+        guard let fp = registry.preferredInterface(in: candidates.map(\.fingerprint)),
+              let profile = registry.resolve(for: fp),
+              let candidate = candidates.first(where: { $0.fingerprint == fp }) else {
             throw HIDError.deviceNotFound
         }
 
-        let transport = HIDTransport(device: pick.0.device, logger: logger)
+        let transport = HIDTransport(device: candidate.device, logger: logger)
         try transport.open()
         self.transport = transport
-        self.activeProfile = pick.1
-        self.activeFingerprint = pick.0.fingerprint
-        logger.info(.hid, "active profile=\(pick.1.identifier) capabilities=\(pick.1.capabilities.labels.joined(separator: ","))")
+        self.activeProfile = profile
+        self.activeFingerprint = fp
+        logger.info(.hid, "active profile=\(profile.identifier) capabilities=\(profile.capabilities.labels.joined(separator: ","))")
     }
 
     private func executeRequest<T>(_ packets: [ProfilePacket],

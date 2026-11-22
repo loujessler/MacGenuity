@@ -6,10 +6,12 @@
 //  Heavy work runs in the actor-isolated `DeviceService`.
 //
 
+import Combine
 import Foundation
 import SwiftUI
 
 extension Notification.Name {
+    static let hidDevicesChanged = Notification.Name("MacGenuity.hidDevicesChanged")
     static let deviceDidChange = Notification.Name("MacGenuity.deviceDidChange")
 }
 
@@ -30,16 +32,13 @@ final class DeviceViewModel: ObservableObject {
     /// Populated on every refresh so the device-picker stays current.
     @Published private(set) var availableDevices: [DeviceFingerprint] = []
 
-    /// The stable key the user has currently *picked* in the device
-    /// selector, independent of whether a profile claims that device.
-    /// E.g. selecting a HyperX microphone keeps `selectedDeviceKey` set
-    /// to the mic's key even though no profile resolves it; the picker
-    /// can therefore still show the user's choice.
+    /// The mouse currently targeted for control, including while connecting.
     @Published private(set) var selectedDeviceKey: String?
 
     private let minimumPollInterval: TimeInterval = 15
     private(set) var pollInterval: TimeInterval = 60
 
+    let registry: ProfileRegistry
     let deviceService: DeviceService
     let audioService: AudioService
     let quadCast2SService: QuadCast2SService
@@ -51,6 +50,7 @@ final class DeviceViewModel: ObservableObject {
     private let logger: LoggerType
     private weak var settings: AppSettings?
 
+    private var hidObserver: AnyCancellable?
     private var pollTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var lightingSaveTask: Task<Void, Never>?
@@ -68,6 +68,7 @@ final class DeviceViewModel: ObservableObject {
     private var refreshPending = false
 
     init(deviceService: DeviceService? = nil,
+         registry: ProfileRegistry = .shared,
          audioService: AudioService? = nil,
          quadCast2SService: QuadCast2SService? = nil,
          history: BatteryHistory? = nil,
@@ -77,7 +78,8 @@ final class DeviceViewModel: ObservableObject {
          notifier: Notifier? = nil,
          logger: LoggerType = FileLogger.shared)
     {
-        self.deviceService = deviceService ?? HyperXDeviceService()
+        self.registry = registry
+        self.deviceService = deviceService ?? HyperXDeviceService(registry: registry)
         self.audioService = audioService ?? CoreAudioMicrophoneService()
         self.quadCast2SService = quadCast2SService ?? QuadCast2SHardwareService()
         self.history = history ?? BatteryHistory()
@@ -124,6 +126,12 @@ final class DeviceViewModel: ObservableObject {
     func start() {
         guard pollTask == nil else { return }
         logger.info(.app, "DeviceViewModel started; log=\(FileLogger.shared.fileURL.path)")
+        // Composite receivers publish several HID interfaces during one attachment.
+        hidObserver = NotificationCenter.default.publisher(for: .hidDevicesChanged)
+            .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in await self?.refresh() }
+            }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
@@ -134,6 +142,7 @@ final class DeviceViewModel: ObservableObject {
     }
 
     func stop() {
+        hidObserver = nil
         pollTask?.cancel(); pollTask = nil
         cancelLightingTasks()
         let service = deviceService
@@ -202,7 +211,7 @@ final class DeviceViewModel: ObservableObject {
     }
 
     private func refreshOnce() async {
-        let generation = selectionGeneration
+        var generation = selectionGeneration
         refreshMicrophones()
         let mics = microphones
         // Enumeration can block in IOKit; run it on the service actor.
@@ -210,16 +219,13 @@ final class DeviceViewModel: ObservableObject {
         guard generation == selectionGeneration else { return }
         self.availableDevices = devices
 
-        // Reconcile the user's saved selection with what's actually
-        // present. Three cases:
-        //   • selection is still attached    → keep it
-        //   • selection is gone              → fall back to first available
-        //   • no selection yet (cold start)  → default to first available
-        let availableKeys = Set(devices.map { $0.stableKey })
-        if let key = selectedDeviceKey, !availableKeys.contains(key) {
-            cancelLightingTasks()
-            selectedDeviceKey = nil
-            await deviceService.setActiveDevice(nil)
+        let mouse = devices.first { $0.stableKey == selectedDeviceKey }
+            ?? devices.first(where: registry.supportsMouseControls)
+        if mouse?.stableKey != selectedDeviceKey {
+            beginSelection(mouse)
+            generation = selectionGeneration
+            await deviceService.setActiveDevice(mouse)
+            guard generation == selectionGeneration else { return }
         }
 
         accessState = deviceService.currentAccessState()
@@ -240,6 +246,14 @@ final class DeviceViewModel: ObservableObject {
             clearDeviceState()
             self.status = .permissionRequired
             self.lastError = PermissionError.inputMonitoringDenied.errorDescription
+            return
+        }
+
+        guard generation == selectionGeneration else { return }
+        guard mouse != nil else {
+            clearDeviceState()
+            status = .disconnected
+            lastError = nil
             return
         }
 
@@ -488,7 +502,7 @@ final class DeviceViewModel: ObservableObject {
             if let fp = fingerprint {
                 deviceStates.record(activeProfile: profile, dpi: dpi, for: fp)
             }
-            lastControlMessage = "DPI profile \(profile) set to \(dpi)"
+            lastControlMessage = "DPI level \(profile) set to \(dpi)"
         } catch HIDError.notPermitted {
             accessState = .denied
             lastControlMessage = "Permission required"
@@ -634,17 +648,18 @@ final class DeviceViewModel: ObservableObject {
     // MARK: - Device selection
 
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async {
+        beginSelection(fingerprint)
+        await deviceService.setActiveDevice(fingerprint)
+        await refresh()
+    }
+
+    private func beginSelection(_ fingerprint: DeviceFingerprint?) {
         selectionGeneration &+= 1
         clearDeviceState()
         lastControlMessage = nil
-        // Remember the user's choice independently of whether a profile
-        // resolves it. This way the picker keeps showing the chosen
-        // device's name even when (e.g.) the user picks a microphone
-        // that doesn't have a HID control profile.
+        lastError = nil
+        status = .unknown
         selectedDeviceKey = fingerprint?.stableKey
-        await deviceService.setActiveDevice(fingerprint)
-        // Force a refresh so activeProfile / battery hydrate from the new device.
-        await refresh()
     }
 
     /// Live-preview helper: send the `D3 00 + commit` select packet AND

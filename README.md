@@ -90,7 +90,7 @@ A dedicated window for contributors and curious users:
 
 ### Settings window
 
-Native macOS Settings scene (⌘,) with separate panes for **General**, **Devices** (sidebar + per-device editors), **Profiles** (registered profile listing), and **About**.
+Settings (⌘,) opens on **Devices**. Connecting a supported mouse selects it automatically and exposes its lighting, DPI and button controls. Select a microphone in the sidebar to adjust its audio settings while the mouse stays connected. **General** contains app and update preferences.
 
 ### System integration
 
@@ -132,7 +132,7 @@ MacGenuity/
 │   ├── Diagnostics/
 │   │   └── DiagnosticsWindow.swift         Candidate list + raw sender + live log tail
 │   └── Settings/
-│       ├── SettingsScene.swift             General / Devices / Profiles / About panes
+│       ├── SettingsScene.swift             Devices / General / About panes
 │       └── QuadCast2SAdvancedControls.swift 108-LED effect and frame-animation editor
 ├── Infrastructure/
 │   ├── HID/

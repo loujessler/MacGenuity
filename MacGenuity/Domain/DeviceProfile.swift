@@ -90,7 +90,7 @@ struct DeviceFingerprint: Equatable {
 /// profile for a `match(...)` confidence score against a discovered device;
 /// the highest scorer wins. Return `0.0` to opt out.
 protocol DeviceProfile: AnyObject {
-    /// Stable identifier shown in logs, the UI's profile picker, and diagnostics.
+    /// Stable identifier shown in logs and diagnostics.
     var identifier: String { get }
     /// Friendly name for the UI ("HyperX Pulsefire Haste 2 Wireless").
     var displayName: String { get }

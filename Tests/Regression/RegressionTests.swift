@@ -45,6 +45,18 @@ enum RegressionTests {
             maxInput: 64, maxOutput: 64, maxFeature: 64)
         precondition(profile.match(haste) > DefaultHyperXProfile().match(haste),
                      "The specific Haste profile must win over the generic driver")
+        let registry = ProfileRegistry.shared
+        precondition(registry.supportsMouseControls(haste))
+        precondition(!registry.supportsMouseControls(soloCast) && !registry.supportsMouseControls(unrelated))
+        let secondInterface = DeviceFingerprint(vendorID: haste.vendorID, productID: haste.productID,
+            product: haste.product, usagePage: 0xFF00, usage: 1,
+            maxInput: 64, maxOutput: 64, maxFeature: 64)
+        let keyboardInterface = DeviceFingerprint(vendorID: haste.vendorID, productID: haste.productID,
+            product: haste.product, usagePage: 1, usage: 6, maxInput: 8, maxOutput: 0, maxFeature: 0)
+        precondition(registry.preferredInterface(in: [haste, keyboardInterface]) == haste)
+        let interfaces = [secondInterface, keyboardInterface, haste]
+        precondition(registry.preferredInterface(in: interfaces) == registry.preferredInterface(in: interfaces.reversed()),
+                     "Discovery order must not change the representative interface")
         let disabled = levels.map { DPILevel(index: $0.index, dpi: $0.dpi,
                                              color: $0.color, enabled: false) }
         let safe = DeviceDPIState(levels: disabled, activeProfile: 5).normalized()
@@ -56,6 +68,6 @@ enum RegressionTests {
         precondition(Data.parseHex("+1") == nil)
         precondition(Data.parseHex("0xDE, AD BE EF") == Data([0xDE, 0xAD, 0xBE, 0xEF]))
         print("Mouse protocol and profile regression tests passed")
-        try await ViewModelTests.run(fingerprint: haste)
+        try await ViewModelTests.run(fingerprint: haste, soloCast: soloCast, unrelated: unrelated)
     }
 }
