@@ -27,6 +27,8 @@ jobs:
           bash Tests/Regression/run.sh
           bash Tests/QuadCast2S/run.sh
           python3 Tests/Regression/installer_test.py
+          python3 Tests/Regression/relaunch_test.py
+          python3 Tests/Regression/relaunch_test.py --reset
       - name: Universal release build
         env:
           HYPERX_UNIVERSAL: '1'

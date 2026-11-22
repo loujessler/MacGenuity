@@ -21,6 +21,11 @@ struct LightingPreset: Codable, Identifiable, Equatable {
     var speed: Int
     var includeHasteProbe: Bool
 
+    var lightingState: DeviceLightingState {
+        DeviceLightingState(target: target, effect: effect, color: color, brightness: brightness,
+                            opacity: opacity, speed: speed, includeHasteProbe: includeHasteProbe)
+    }
+
     init(id: UUID = UUID(), name: String,
          target: LEDTarget, effect: LEDEffect, color: RGBColor,
          brightness: Int, opacity: Int = 255,

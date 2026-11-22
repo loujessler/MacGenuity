@@ -80,6 +80,39 @@ struct DeviceFingerprint: Equatable {
     let maxInput: Int
     let maxOutput: Int
     let maxFeature: Int
+    /// Identifies this attachment. Device preferences use the stable key across reconnects.
+    var registryEntryID: UInt64?
+    var locationID: Int?
+    var serialNumber: String?
+
+    var modelInterfaceKey: String {
+        String(format: "%04X:%04X:%04X:%04X", vendorID, productID, usagePage, usage)
+    }
+
+    var stableKey: String {
+        if let serialNumber { return "\(modelInterfaceKey):serial:\(serialNumber)" }
+        if let locationID { return "\(modelInterfaceKey):port:\(locationID)" }
+        return modelInterfaceKey
+    }
+
+    var attachmentKey: String { registryEntryID.map { "registry:\($0)" } ?? stableKey }
+
+    // Vendor-defined interfaces carry device commands rather than standard input events.
+    var isVendorControlInterface: Bool { (0xFF00...0xFFFF).contains(usagePage) }
+
+    func matchesAttachment(_ candidate: DeviceFingerprint) -> Bool {
+        if let registryEntryID { return registryEntryID == candidate.registryEntryID }
+        return stableKey == candidate.stableKey
+    }
+
+    func probeRequests(_ requests: [ProfilePacket]) -> [ProfilePacket] {
+        // A receiver with a full interrupt transport can explicitly advertise no feature reports.
+        guard maxFeature == 0, maxInput >= PacketUtils.packetSize, maxOutput >= PacketUtils.packetSize else {
+            return requests
+        }
+        let interrupt = requests.filter { $0.send == .output && $0.receive == .input }
+        return interrupt.isEmpty ? requests : requests.filter { $0.send != .feature && $0.receive != .feature }
+    }
 
     var lowercaseProduct: String { product.lowercased() }
 }

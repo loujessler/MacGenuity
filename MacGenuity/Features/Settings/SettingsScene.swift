@@ -99,7 +99,7 @@ private struct DevicesPane: View {
         let devices = unifiedDevices()
         let mouse = devices.first {
             guard case .hid(let fp) = $0 else { return false }
-            return fp.stableKey == viewModel.selectedDeviceKey
+            return viewModel.selectedDevice?.matchesAttachment(fp) == true
         }
         let current = devices.first { $0.id == browsedDeviceID } ?? mouse ?? devices.first
 
@@ -110,7 +110,7 @@ private struct DevicesPane: View {
                     guard let device = devices.first(where: { $0.id == id }) else { return }
                     browsedDeviceID = id
                     if case .hid(let fp) = device, viewModel.registry.supportsMouseControls(fp),
-                       viewModel.selectedDeviceKey != fp.stableKey {
+                       viewModel.selectedDevice?.matchesAttachment(fp) != true {
                         Task { await viewModel.setActiveDevice(fp) }
                     }
                 }
@@ -138,6 +138,7 @@ private struct DevicesPane: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("Refresh connected devices")
                 .help("Re-scan connected devices")
             }
             .padding(.horizontal, 12)
@@ -206,8 +207,11 @@ private struct DevicesPane: View {
 
     private func subtitle(for device: ConfigurableDevice) -> String? {
         switch device {
-        case .hid:
-            return nil
+        case .hid(let fp):
+            guard let port = fp.locationID, viewModel.availableDevices.contains(where: {
+                $0.product == fp.product && $0.locationID != fp.locationID
+            }) else { return nil }
+            return String(format: "USB port 0x%08X", port)
         case .microphone(let mic):
             if mic.isDefaultInput { return "Default input" }
             if let muted = mic.isMuted { return muted ? "Muted" : "Live" }
@@ -227,7 +231,7 @@ private struct DevicesPane: View {
                     viewModel: viewModel,
                     presetStore: presetStore
                 )
-                .id(fp.stableKey)
+                .id(fp.attachmentKey)
             case .microphone(let mic):
                 MicrophoneDetail(microphone: mic, viewModel: viewModel)
             }
@@ -287,10 +291,14 @@ private struct HIDDeviceDetail: View {
                 Divider()
 
                 if let active = viewModel.activeProfile,
-                   active.fingerprint.stableKey == fingerprint.stableKey
+                   active.fingerprint.matchesAttachment(fingerprint)
                 {
                     if active.capabilities.contains(.battery), let battery = viewModel.battery {
                         BatterySection(battery: battery)
+                    } else if active.capabilities.contains(.battery), let error = viewModel.lastError {
+                        Label("Battery unavailable", systemImage: "battery.0")
+                            .foregroundStyle(.secondary)
+                            .help(error)
                     }
                     if active.capabilities.contains(.lighting) {
                         CollapsibleSection(title: "Lighting", systemImage: "lightbulb") {
@@ -304,8 +312,7 @@ private struct HIDDeviceDetail: View {
                     }
                     if active.capabilities.contains(.buttons) {
                         CollapsibleSection(title: "Buttons", systemImage: "rectangle.grid.2x2") {
-                            ButtonsSection(viewModel: viewModel,
-                                           fingerprint: fingerprint)
+                            ButtonsSection(viewModel: viewModel)
                         }
                     }
                 } else {
@@ -324,10 +331,7 @@ private struct HIDDeviceDetail: View {
     }
 
     private var deviceIcon: String {
-        let name = fingerprint.lowercaseProduct
-        if name.contains("cast") { return "mic" }
-        if name.contains("cloud") || name.contains("headset") { return "headphones" }
-        return "computermouse"
+        ConfigurableDevice.hid(fingerprint).iconName
     }
 
     @ViewBuilder
@@ -335,12 +339,13 @@ private struct HIDDeviceDetail: View {
         if !viewModel.registry.supportsMouseControls(fingerprint) {
             Text("Settings are unavailable for this device.")
                 .foregroundStyle(.secondary)
-        } else if viewModel.accessState == .denied {
-            Button("Open Input Monitoring Settings…", action: viewModel.openInputMonitoringSettings)
-        } else if viewModel.selectedDeviceKey == fingerprint.stableKey,
+        } else if viewModel.selectedDevice?.matchesAttachment(fingerprint) == true,
+                  viewModel.status == .permissionRequired {
+            InputMonitoringHelp()
+        } else if viewModel.selectedDevice?.matchesAttachment(fingerprint) == true,
                   case .error(let message) = viewModel.status {
             Text(message).foregroundStyle(.secondary)
-        } else if viewModel.selectedDeviceKey == fingerprint.stableKey,
+        } else if viewModel.selectedDevice?.matchesAttachment(fingerprint) == true,
                   viewModel.status == .disconnected {
             Text("Waiting for the mouse receiver.").foregroundStyle(.secondary)
         } else {
@@ -419,6 +424,7 @@ private struct LightingSection: View {
         .onChange(of: brightness) { _ in scheduleLiveUpdate() }
         .onChange(of: speed) { _ in scheduleLiveUpdate() }
         .onChange(of: effect) { _ in scheduleLiveUpdate() }
+        .onChange(of: target) { _ in scheduleLiveUpdate() }
         .onChange(of: includeHasteProbe) { _ in scheduleLiveUpdate() }
         .onChange(of: liveStream) { enabled in
             if enabled { scheduleLiveUpdate() } else { streamTask?.cancel() }
@@ -457,6 +463,7 @@ private struct LightingSection: View {
             HStack(spacing: 8) {
                 Text("Brightness").frame(width: 90, alignment: .leading)
                 Slider(value: $brightness, in: 0...100, step: 1)
+                    .accessibilityLabel("Brightness")
                 Text("\(Int(brightness))%")
                     .frame(width: 40, alignment: .trailing).monospacedDigit()
             }
@@ -465,6 +472,7 @@ private struct LightingSection: View {
                 HStack(spacing: 8) {
                     Text("Speed").frame(width: 90, alignment: .leading)
                     Slider(value: $speed, in: 0...100, step: 1)
+                        .accessibilityLabel("Effect speed")
                     Text("\(Int(speed))%")
                         .frame(width: 40, alignment: .trailing).monospacedDigit()
                 }
@@ -486,14 +494,19 @@ private struct LightingSection: View {
 
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: 8) {
+                    Picker("Lighting zone", selection: $target) {
+                        ForEach(LEDTarget.allCases) { Text($0.title).tag($0) }
+                    }
+                    .fixedSize()
                     HStack(spacing: 8) {
                         Text("Colour intensity").frame(width: 100, alignment: .leading)
                         Slider(value: $opacity, in: 0...255, step: 1)
+                            .accessibilityLabel("Colour intensity")
                         Text("\(Int((opacity / 255 * 100).rounded()))%")
                             .frame(width: 40, alignment: .trailing).monospacedDigit()
                     }
                     .help("Scale the RGB colour independently of device brightness.")
-                    if viewModel.activeProfile?.capabilities.contains(.hasteDirect) == true {
+                    if effect == .staticColor, viewModel.activeProfile?.capabilities.contains(.hasteDirect) == true {
                         Toggle("Experimental direct colour", isOn: $includeHasteProbe)
                         Text("Uses a continuous colour stream. Leave off for normal static lighting; some firmware may pulse in this mode.")
                             .font(.caption)
@@ -516,12 +529,11 @@ private struct LightingSection: View {
                 Label("Apply lighting", systemImage: "lightbulb")
             }
             .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.return)
             .disabled(viewModel.activeProfile == nil)
 
             Spacer()
 
-            if let message = viewModel.lastControlMessage {
+            if let message = viewModel.lightingMessage {
                 Text(message)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -602,13 +614,7 @@ private struct LightingSection: View {
             }
             Spacer()
             Button {
-                target = preset.target
-                effect = preset.effect
-                color = preset.color
-                brightness = Double(preset.brightness)
-                opacity = Double(preset.opacity)
-                speed = Double(preset.speed)
-                includeHasteProbe = preset.includeHasteProbe
+                loadEditor(preset.lightingState)
             } label: {
                 Image(systemName: "arrow.up.right.circle")
             }
@@ -616,7 +622,7 @@ private struct LightingSection: View {
             .help("Load preset into editor")
 
             Button {
-                Task { await viewModel.applyPreset(preset) }
+                applyPreset(preset)
             } label: {
                 Image(systemName: "play.fill")
             }
@@ -635,23 +641,25 @@ private struct LightingSection: View {
         .padding(.vertical, 2)
         .contextMenu {
             Button("Load into editor") {
-                target = preset.target
-                effect = preset.effect
-                color = preset.color
-                brightness = Double(preset.brightness)
-                opacity = Double(preset.opacity)
-                speed = Double(preset.speed)
-                includeHasteProbe = preset.includeHasteProbe
+                loadEditor(preset.lightingState)
             }
-            Button("Apply") { Task { await viewModel.applyPreset(preset) } }
+            Button("Apply") { applyPreset(preset) }
             Divider()
             Button("Delete", role: .destructive) { presetStore.remove(preset) }
         }
     }
 
     private func hydrate() {
+        loadEditor(viewModel.currentDeviceState.lighting)
+    }
+
+    private func applyPreset(_ preset: LightingPreset) {
+        loadEditor(preset.lightingState)
+        Task { await viewModel.applyPreset(preset) }
+    }
+
+    private func loadEditor(_ s: DeviceLightingState) {
         streamTask?.cancel()
-        let s = viewModel.currentDeviceState.lighting
         hydratedState = s
         target = s.target
         effect = s.effect
@@ -664,14 +672,13 @@ private struct LightingSection: View {
 
     private func scheduleLiveUpdate() {
         let state = snapshotState()
-        guard liveStream, state != hydratedState else { return }
         streamTask?.cancel()
-        hydratedState = state
-        let deviceKey = viewModel.activeProfile?.fingerprint.stableKey
+        guard liveStream, state != hydratedState, let fingerprint = viewModel.activeProfile?.fingerprint else { return }
         streamTask = Task { [weak viewModel] in
             try? await Task.sleep(nanoseconds: 30_000_000)
             guard !Task.isCancelled,
-                  viewModel?.activeProfile?.fingerprint.stableKey == deviceKey else { return }
+                  viewModel?.activeProfile?.fingerprint == fingerprint else { return }
+            hydratedState = state
             await viewModel?.applyLighting(state: state, persist: false)
         }
     }
@@ -697,6 +704,9 @@ private struct DPISection: View {
                 .fixedSize(horizontal: false, vertical: true)
             levelsList
             footer
+            if let message = viewModel.dpiMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
         }
         .onAppear { hydrate() }
         .onReceive(NotificationCenter.default.publisher(for: .deviceDidChange)) { _ in
@@ -732,11 +742,11 @@ private struct DPISection: View {
 
         return HStack(spacing: 10) {
             Button {
-                activeProfile = level.index
                 let pickedColor = levels[index].color
                 Task {
-                    await viewModel.selectDPIProfile(level.index,
-                                                     previewColor: pickedColor)
+                    if await viewModel.selectDPIProfile(level.index, previewColor: pickedColor) {
+                        activeProfile = level.index
+                    }
                 }
             } label: {
                 Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
@@ -745,6 +755,8 @@ private struct DPISection: View {
             }
             .buttonStyle(.plain)
             .disabled(!level.enabled)
+            .accessibilityLabel("Select DPI level \(level.index)")
+            .accessibilityValue(isActive ? "Active" : "Inactive")
             .help(isActive ? "Active DPI level" : "Make active (applies + flashes colour)")
 
             Text("DPI \(level.index)")
@@ -754,6 +766,8 @@ private struct DPISection: View {
 
             Slider(value: dpiBinding, in: 50...16_000, step: 50)
                 .disabled(!level.enabled)
+                .accessibilityLabel("DPI level \(level.index) sensitivity")
+                .accessibilityValue("\(level.dpi) DPI")
                 .frame(maxWidth: .infinity)
 
             Text("\(level.dpi)")
@@ -765,10 +779,11 @@ private struct DPISection: View {
             colorWell(for: index)
                 .disabled(!level.enabled)
 
-            Toggle("", isOn: enabledBinding)
+            Toggle("Enable DPI level \(level.index)", isOn: enabledBinding)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
+                .disabled(level.enabled && levels.filter(\.enabled).count == 1)
                 .help("Enable / disable this level in the on-mouse DPI cycle")
         }
         .padding(.horizontal, 8)
@@ -791,7 +806,7 @@ private struct DPISection: View {
                 levels[index].color = rgb(from: newValue)
             }
         )
-        return ColorPicker("", selection: binding, supportsOpacity: false)
+        return ColorPicker("DPI level \(levels[index].index) indicator colour", selection: binding, supportsOpacity: false)
             .labelsHidden()
             .frame(width: 36, height: 22)
             .help("Indicator colour for this DPI level")
@@ -907,11 +922,12 @@ private struct CollapsibleSection<Content: View>: View {
 
 private struct ButtonsSection: View {
     @ObservedObject var viewModel: DeviceViewModel
-    let fingerprint: DeviceFingerprint
 
     /// Local edit copy. Hydrated from per-device store on appear and
     /// device-switch; pushed back via `apply`.
     @State private var assignments: [PhysicalButton: ButtonAction] = [:]
+    @State private var editedButtons: Set<PhysicalButton> = []
+    @State private var applying = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -942,7 +958,7 @@ private struct ButtonsSection: View {
                 .font(.system(size: 12, weight: .medium))
                 .frame(width: 110, alignment: .leading)
 
-            Picker("", selection: bindingFor(button: button)) {
+            Picker("Action for \(button.title)", selection: bindingFor(button: button)) {
                 Section("Mouse") {
                     ForEach(ButtonAction.MouseFunctionCode.allCases) { code in
                         Text(code.title).tag(ButtonAction.mouseButton(code))
@@ -967,7 +983,7 @@ private struct ButtonsSection: View {
             // without scrolling to the footer.
             if current != ButtonAction.factoryDefault(for: button) {
                 Button {
-                    assignments[button] = ButtonAction.factoryDefault(for: button)
+                    setAction(.factoryDefault(for: button), for: button)
                 } label: {
                     Image(systemName: "arrow.uturn.backward.circle")
                         .foregroundStyle(.tertiary)
@@ -981,48 +997,63 @@ private struct ButtonsSection: View {
 
     private var footer: some View {
         HStack {
-            if let message = viewModel.lastControlMessage {
+            if let message = viewModel.buttonsMessage {
                 Text(message)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Button("Restore defaults") {
-                for button in PhysicalButton.allCases {
-                    assignments[button] = ButtonAction.factoryDefault(for: button)
+                for button in PhysicalButton.remappable {
+                    setAction(.factoryDefault(for: button), for: button)
                 }
             }
             .buttonStyle(.bordered)
 
             Button {
-                let payload = PhysicalButton.allCases.map { button in
+                let payload = PhysicalButton.remappable.filter(editedButtons.contains).map { button in
                     ButtonAssignment(
                         button: button,
                         action: assignments[button] ?? ButtonAction.factoryDefault(for: button)
                     )
                 }
-                Task { await viewModel.applyButtonAssignments(payload) }
+                applying = true
+                Task {
+                    if await viewModel.applyButtonAssignments(payload) {
+                        for entry in payload where assignments[entry.button] == entry.action {
+                            editedButtons.remove(entry.button)
+                        }
+                    }
+                    applying = false
+                }
             } label: {
                 Label("Apply", systemImage: "checkmark.seal")
             }
             .buttonStyle(.borderedProminent)
+            .disabled(editedButtons.isEmpty || applying)
         }
     }
 
     private func bindingFor(button: PhysicalButton) -> Binding<ButtonAction> {
         Binding<ButtonAction>(
             get: { assignments[button] ?? ButtonAction.factoryDefault(for: button) },
-            set: { assignments[button] = $0 }
+            set: { setAction($0, for: button) }
         )
+    }
+
+    private func setAction(_ action: ButtonAction, for button: PhysicalButton) {
+        assignments[button] = action
+        editedButtons.insert(button)
     }
 
     private func hydrate() {
         let s = viewModel.currentDeviceState.buttons
         var map: [PhysicalButton: ButtonAction] = [:]
-        for button in PhysicalButton.allCases {
+        for button in PhysicalButton.remappable {
             map[button] = s.action(for: button)
         }
         assignments = map
+        editedButtons.removeAll()
     }
 }
 
@@ -1125,6 +1156,8 @@ private struct MicrophoneDetail: View {
                             }
                         }
                     ), in: 0...100, step: 1)
+                    .accessibilityLabel("Microphone input volume")
+                    .accessibilityValue("\(volume)%")
                     .disabled(!microphone.canSetVolume)
                     Text("\(volume)%")
                         .font(.system(size: 11, design: .monospaced))
@@ -1138,7 +1171,7 @@ private struct MicrophoneDetail: View {
                     .foregroundStyle(.tertiary)
             }
 
-            if let message = viewModel.lastControlMessage {
+            if let message = viewModel.microphoneMessages[microphone.id] {
                 Text(message)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)

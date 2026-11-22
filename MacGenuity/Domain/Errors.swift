@@ -65,6 +65,7 @@ enum HIDError: Error, LocalizedError, Equatable {
 
 enum QuadCast2SError: Error, LocalizedError, Equatable {
     case deviceNotFound
+    case ambiguousController
     case interfaceNotFound(String)
     case openFailed(Int32)
     case readReportFailed(reportID: Int, result: Int32)
@@ -77,6 +78,8 @@ enum QuadCast2SError: Error, LocalizedError, Equatable {
         switch self {
         case .deviceNotFound:
             return "HyperX QuadCast 2 S controller not found."
+        case .ambiguousController:
+            return "Connect one QuadCast 2 S at a time to control its lighting."
         case .interfaceNotFound(let name):
             return "QuadCast 2 S \(name) interface not found."
         case .openFailed(let result):

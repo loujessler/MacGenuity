@@ -4,8 +4,7 @@
 //
 //  Locates HyperX-compatible HID interfaces and produces lightweight
 //  fingerprints. The actual HID open is deferred to HIDTransport,
-//  which only happens once a profile has been resolved and access has
-//  been granted.
+//  which opens only the selected interface.
 //
 
 import Foundation
@@ -31,14 +30,13 @@ enum HIDDeviceFinder {
     static func discoverCandidates(logger: LoggerType = FileLogger.shared) -> [HIDDeviceCandidate] {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         IOHIDManagerSetDeviceMatching(manager, nil)
-        defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
 
         guard let deviceSet = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> else {
             return []
         }
 
         let candidates = deviceSet.compactMap { dev -> HIDDeviceCandidate? in
-            let fingerprint = DeviceFingerprint(
+            var fingerprint = DeviceFingerprint(
                 vendorID:  propertyInt(dev, kIOHIDVendorIDKey),
                 productID: propertyInt(dev, kIOHIDProductIDKey),
                 product:   propertyString(dev, kIOHIDProductKey),
@@ -61,6 +59,11 @@ enum HIDDeviceFinder {
                 || lower.contains("solocast")
             guard plausible else { return nil }
 
+            fingerprint.registryEntryID = registryEntryID(for: dev)
+            let location = propertyInt(dev, kIOHIDLocationIDKey)
+            if location != 0 { fingerprint.locationID = location }
+            let serial = propertyString(dev, kIOHIDSerialNumberKey).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !serial.isEmpty { fingerprint.serialNumber = serial }
             return HIDDeviceCandidate(device: dev, fingerprint: fingerprint)
         }
 
@@ -68,6 +71,11 @@ enum HIDDeviceFinder {
             logger.debug(.hid, "candidate \(candidate.summary)")
         }
         return candidates
+    }
+
+    static func registryEntryID(for device: IOHIDDevice) -> UInt64? {
+        var id: UInt64 = 0
+        return IORegistryEntryGetRegistryEntryID(IOHIDDeviceGetService(device), &id) == KERN_SUCCESS ? id : nil
     }
 
     static func propertyInt(_ device: IOHIDDevice, _ key: String) -> Int {

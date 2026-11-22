@@ -204,14 +204,13 @@ struct RGBColor: Equatable, Codable, Hashable {
     static func parseHex(_ text: String) -> RGBColor? {
         var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("#") { trimmed.removeFirst() }
-        guard trimmed.count == 6 || trimmed.count == 3 else { return nil }
+        guard trimmed.count == 6 || trimmed.count == 3,
+              trimmed.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
         if trimmed.count == 3 {
             // expand "abc" → "aabbcc"
             trimmed = trimmed.map { "\($0)\($0)" }.joined()
         }
-        let scanner = Scanner(string: trimmed)
-        var packed: UInt64 = 0
-        guard scanner.scanHexInt64(&packed) else { return nil }
+        guard let packed = UInt32(trimmed, radix: 16) else { return nil }
         return RGBColor(
             red:   Int((packed >> 16) & 0xFF),
             green: Int((packed >> 8) & 0xFF),

@@ -148,37 +148,60 @@ struct DeviceState: Codable, Equatable {
     }
 }
 
-extension DeviceFingerprint {
-    /// Stable per-device key. Includes usage so different HID interfaces
-    /// of the same physical device get distinct entries.
-    var stableKey: String {
-        String(format: "%04X:%04X:%04X:%04X",
-               vendorID, productID, usagePage, usage)
-    }
-}
-
 @MainActor
 final class DeviceStateStore: ObservableObject {
     @Published private(set) var statesByKey: [String: DeviceState] = [:]
 
     private let defaults: UserDefaults
     private let storageKey = "deviceStates.v1"
+    private let multipleReceiversKey = "deviceStates.multipleReceivers.v1"
+    private var modelsWithMultipleReceivers: Set<String>
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        modelsWithMultipleReceivers = Set(defaults.stringArray(forKey: multipleReceiversKey) ?? [])
         load()
     }
 
     func state(for fingerprint: DeviceFingerprint) -> DeviceState {
-        statesByKey[fingerprint.stableKey] ?? .default
+        if fingerprint.serialNumber == nil, !modelsWithMultipleReceivers.contains(fingerprint.modelInterfaceKey),
+           let state = statesByKey[fingerprint.modelInterfaceKey] { return state }
+        if let state = statesByKey[fingerprint.stableKey] { return state }
+        guard !modelsWithMultipleReceivers.contains(fingerprint.modelInterfaceKey) else { return .default }
+        return statesByKey[fingerprint.modelInterfaceKey] ?? .default
+    }
+
+    func setConnectedDevices(_ devices: [DeviceFingerprint]) {
+        let groups = Dictionary(grouping: devices, by: \.modelInterfaceKey)
+        let shared = groups.compactMap { $0.value.count > 1 ? $0.key : nil }
+        if !modelsWithMultipleReceivers.isSuperset(of: shared) {
+            modelsWithMultipleReceivers.formUnion(shared)
+            defaults.set(modelsWithMultipleReceivers.sorted(), forKey: multipleReceiversKey)
+        }
+        // Keep a port snapshot for the known receiver in case a second one is attached later.
+        var changed = false
+        for device in devices where !modelsWithMultipleReceivers.contains(device.modelInterfaceKey) {
+            let hasIndividualState = device.serialNumber != nil && statesByKey[device.stableKey] != nil
+            if !hasIndividualState, let state = statesByKey[device.modelInterfaceKey],
+               state != statesByKey[device.stableKey] {
+                statesByKey[device.stableKey] = state
+                changed = true
+            }
+        }
+        if changed { persist() }
     }
 
     func update(_ fingerprint: DeviceFingerprint,
                 _ transform: (inout DeviceState) -> Void)
     {
-        var state = statesByKey[fingerprint.stableKey] ?? .default
+        var state = state(for: fingerprint)
         transform(&state)
         statesByKey[fingerprint.stableKey] = state
+        if fingerprint.serialNumber == nil, fingerprint.stableKey != fingerprint.modelInterfaceKey,
+           !modelsWithMultipleReceivers.contains(fingerprint.modelInterfaceKey) {
+            // A receiver without a serial number can be moved to another USB port.
+            statesByKey[fingerprint.modelInterfaceKey] = state
+        }
         persist()
     }
 

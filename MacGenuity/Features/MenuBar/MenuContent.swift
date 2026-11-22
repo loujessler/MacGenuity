@@ -24,15 +24,18 @@ struct MenuContent: View {
         VStack(alignment: .leading, spacing: 0) {
             statusSection
 
-            if viewModel.accessState == .denied || viewModel.status == .permissionRequired {
-                divider; permissionSection
+            if viewModel.status == .permissionRequired {
+                divider
+                InputMonitoringHelp()
+                    .font(.system(size: 11))
+                    .padding(.horizontal, 14)
             }
 
             if hasMouseDetails {
                 divider; mouseSection
             }
 
-            if viewModel.battery != nil, !history.samples.isEmpty {
+            if viewModel.battery != nil, history.samples.count >= 2 {
                 divider; batterySection
             }
 
@@ -53,7 +56,11 @@ struct MenuContent: View {
     }
 
     private var hasMouseDetails: Bool {
-        viewModel.info != nil || viewModel.battery != nil || viewModel.lastError != nil
+        viewModel.info != nil || viewModel.battery != nil || partialReadError != nil
+    }
+
+    private var partialReadError: String? {
+        viewModel.status == .connected ? viewModel.lastError : nil
     }
 
     @ViewBuilder
@@ -62,11 +69,24 @@ struct MenuContent: View {
         case .unknown:
             row(icon: "questionmark.circle", label: "Checking…")
         case .connected:
-            if let battery = viewModel.battery {
-                batteryRow(battery)
-            } else {
-                row(icon: "computermouse", label: "Connected")
+            HStack(spacing: 8) {
+                Image(systemName: "computermouse").foregroundStyle(.secondary)
+                let product = viewModel.activeProfile?.fingerprint.product ?? ""
+                Text(viewModel.info?.displayName ?? (product.isEmpty ? "Mouse connected" : product))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(2)
+                Spacer(minLength: 4)
+                if let battery = viewModel.battery {
+                    Label("\(battery.percent)%", systemImage: batteryIcon(battery))
+                        .foregroundStyle(batteryColor(battery))
+                        .monospacedDigit()
+                        .fixedSize()
+                        .accessibilityLabel(batteryDescription(battery))
+                        .help(batteryDescription(battery))
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
         case .disconnected:
             if viewModel.microphones.isEmpty {
                 row(icon: "powerplug", label: "No supported devices connected", muted: true)
@@ -80,93 +100,9 @@ struct MenuContent: View {
         }
     }
 
-    private var permissionSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Input Monitoring access required")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            // macOS pins Input Monitoring grants to a binary's *cdhash*,
-            // not its bundle ID. Re-signing with a different cert (e.g.
-            // Apple Development → Developer ID) regenerates the cdhash,
-            // so the toggle in System Settings still shows ON but it's
-            // pinned to the stale hash and the running process keeps
-            // getting denied. "Reset & Relaunch" wipes the TCC entry
-            // entirely via `tccutil reset`, then quits + reopens so the
-            // OS re-prompts against the current cdhash.
-            Text("Toggle in System Settings shows ON but the app still says denied? macOS code-signing quirk — TCC binds the grant to the binary's signature, which changes when the app is re-signed.")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Recommended: click \"Reset & Relaunch\" below — it wipes the cached permission entry and restarts so macOS prompts fresh.")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 6) {
-                Button("System Settings") { viewModel.openInputMonitoringSettings() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button("Relaunch") { relaunchApp() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .help("Just quit and reopen — keeps the existing TCC entry")
-                Button("Reset & Relaunch") { resetTCCAndRelaunch() }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
-                    .help("Run `tccutil reset ListenEvent` to wipe the cached grant, then quit and reopen so macOS prompts fresh")
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-    }
-
-    /// Quits the current process and `open`s the same bundle from a
-    /// detached child. `open -n` ensures macOS treats it as a fresh
-    /// launch (new process, new TCC permission snapshot) instead of
-    /// just reactivating the existing one.
-    private func relaunchApp() {
-        let bundlePath = Bundle.main.bundleURL.path
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-n", bundlePath]
-        do {
-            try task.run()
-            // Give `open` a beat to spawn the new process before we exit.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                NSApp.terminate(nil)
-            }
-        } catch {
-            // Fall back to a plain terminate — user will have to relaunch
-            // manually but at least we don't leave the app in a broken
-            // state.
-            NSApp.terminate(nil)
-        }
-    }
-
-    /// Wipes the cached Input Monitoring grant for this bundle via
-    /// `tccutil reset ListenEvent <bundle id>`, then performs a normal
-    /// relaunch. The next launch will trigger a fresh TCC prompt and
-    /// (as a side effect) refresh the icon System Settings displays for
-    /// this app in its list.
-    ///
-    /// `tccutil reset` is user-scoped for ListenEvent — no sudo or
-    /// admin prompt required. We don't block on its completion: even
-    /// if it somehow fails the subsequent relaunch is harmless.
-    private func resetTCCAndRelaunch() {
-        let bundleID = Bundle.main.bundleIdentifier ?? "io.github.loujessler.macgenuity"
-        let reset = Process()
-        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        reset.arguments = ["reset", "ListenEvent", bundleID]
-        reset.terminationHandler = { _ in
-            DispatchQueue.main.async { relaunchApp() }
-        }
-        do {
-            try reset.run()
-        } catch {
-            FileLogger.shared.error(.app, "Permission reset failed: \(error.localizedDescription)")
-        }
-    }
-
     @ViewBuilder
     private var mouseSection: some View {
         if let battery = viewModel.battery {
-            detailRow(label: "Battery", value: batteryDescription(battery))
             if shouldShowLowBatteryWarning(battery) {
                 detailRow(label: "Warning", value: "Low battery")
             }
@@ -176,12 +112,16 @@ struct MenuContent: View {
             }
         }
         if let info = viewModel.info {
-            detailRow(label: "Mouse", value: info.displayName)
             detailRow(label: "Firmware", value: info.firmware)
             detailRow(label: "VID/PID", value: "\(Hex.u16(info.vendorID)) / \(Hex.u16(info.productID))")
         }
         if let updated = viewModel.lastUpdate {
-            detailRow(label: "Updated", value: relativeTime(updated))
+            TimelineView(.periodic(from: updated, by: 30)) { context in
+                detailRow(label: "Updated", value: relativeTime(updated, now: context.date))
+            }
+        }
+        if let partialReadError {
+            detailRow(label: "Read error", value: partialReadError)
         }
     }
 
@@ -226,10 +166,10 @@ struct MenuContent: View {
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if mic.isDefaultInput {
-                    Text("default input")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                let details = [mic.isMuted.map { $0 ? "Muted" : "Live" },
+                               mic.isDefaultInput ? "Default input" : nil].compactMap { $0 }
+                if !details.isEmpty {
+                    Text(details.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 8)
@@ -239,7 +179,7 @@ struct MenuContent: View {
                 // the mic is picking up sound, OFF means muted. This is
                 // the inverse of CoreAudio's `kAudioDevicePropertyMute`,
                 // so the binding flips the value on the way in/out.
-                Toggle("", isOn: Binding(
+                Toggle("\(mic.displayName) live input", isOn: Binding(
                     get: { !muted },
                     set: { isLive in
                         Task { await viewModel.setMicrophoneMute(!isLive, for: mic) }
@@ -287,25 +227,6 @@ struct MenuContent: View {
     }
 
     // MARK: - Row builders
-
-    private func batteryRow(_ b: BatteryState) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: batteryIcon(b))
-                .font(.system(size: 13))
-                .foregroundStyle(batteryColor(b))
-                .frame(width: 18)
-            Text("\(b.percent)%")
-                .font(.system(size: 13, weight: .medium))
-            if b.isCharging {
-                Text("charging")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-    }
 
     private func row(icon: String, label: String, muted: Bool = false) -> some View {
         HStack(spacing: 8) {
@@ -389,9 +310,10 @@ struct MenuContent: View {
         settings.lowBatteryWarningEnabled && !b.isCharging && b.percent <= settings.lowBatteryThreshold
     }
 
-    private func relativeTime(_ date: Date) -> String {
+    private func relativeTime(_ date: Date, now: Date) -> String {
+        if now.timeIntervalSince(date) < 5 { return "Just now" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }

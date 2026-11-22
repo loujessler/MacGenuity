@@ -67,14 +67,19 @@ struct QuadCast2SAdvancedControls: View {
                 }
             }
 
-            HStack(spacing: 6) {
-                capabilityBadge(
-                    "\(viewModel.quadCast2SState.lampCount ?? 108) LEDs",
-                    icon: "circle.grid.3x3.fill"
-                )
-                capabilityBadge("12 × 9 cylinder", icon: "cylinder")
-                let fps = viewModel.quadCast2SState.maximumFramesPerSecond ?? 30.3
-                capabilityBadge("\(Int(fps.rounded(.down))) FPS", icon: "speedometer")
+            if viewModel.quadCast2SState.hasLightingInterface {
+                HStack(spacing: 6) {
+                    if let lamps = viewModel.quadCast2SState.lampCount {
+                        capabilityBadge("\(lamps) LEDs", icon: "circle.grid.3x3.fill")
+                    }
+                    capabilityBadge("12 × 9 cylinder", icon: "cylinder")
+                    if let fps = viewModel.quadCast2SState.maximumFramesPerSecond {
+                        capabilityBadge("\(Int(fps.rounded(.down))) FPS", icon: "speedometer")
+                    }
+                }
+            } else {
+                Text(viewModel.quadCast2SState.errorMessage ?? "Waiting for the microphone’s lighting controller…")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Text("Every LED is individually addressable. Animated effects are rendered on the Mac and sent as atomic 108-lamp frames.")
@@ -500,7 +505,7 @@ struct QuadCast2SAdvancedControls: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
-        if let error = viewModel.quadCast2SState.errorMessage {
+        if viewModel.quadCast2SState.hasLightingInterface, let error = viewModel.quadCast2SState.errorMessage {
             Text(error)
                 .font(.system(size: 10))
                 .foregroundStyle(.orange)

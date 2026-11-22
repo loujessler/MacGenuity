@@ -13,6 +13,7 @@ struct InteractiveColorPicker: View {
     @ObservedObject var presetStore: PresetStore
 
     @State private var hex: String = ""
+    @State private var invalidHex = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -31,16 +32,21 @@ struct InteractiveColorPicker: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                 TextField("RRGGBB", text: $hex, onCommit: commitHex)
+                    .accessibilityLabel("Hex colour")
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
                     .font(.system(size: 11, design: .monospaced))
                     .frame(width: 80)
                 Spacer(minLength: 0)
             }
+            .onChange(of: hex) { _ in invalidHex = false }
             .onChange(of: color) { newValue in
                 hex = newValue.hexString
             }
             .onAppear { hex = color.hexString }
+            if invalidHex {
+                Text("Enter 3 or 6 hexadecimal digits.").font(.caption).foregroundStyle(.red)
+            }
 
             if !presetStore.recentColors.isEmpty {
                 recentStrip
@@ -78,6 +84,8 @@ struct InteractiveColorPicker: View {
                 .frame(width: 14, alignment: .leading)
             Slider(value: value, in: 0...255, step: 1)
                 .tint(tint)
+                .accessibilityLabel(label == "R" ? "Red" : label == "G" ? "Green" : "Blue")
+                .accessibilityValue("\(Int(value.wrappedValue))")
             Text("\(Int(value.wrappedValue))")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -168,8 +176,10 @@ struct InteractiveColorPicker: View {
     private func commitHex() {
         if let parsed = RGBColor.parseHex(hex) {
             color = parsed
+            hex = parsed.hexString
+            invalidHex = false
         } else {
-            hex = color.hexString
+            invalidHex = true
         }
     }
 
@@ -179,7 +189,11 @@ struct InteractiveColorPicker: View {
 
     /// Pick black or white text depending on the swatch luminance.
     private func textColorOver(_ c: RGBColor) -> Color {
-        let lum = (0.299 * Double(c.red) + 0.587 * Double(c.green) + 0.114 * Double(c.blue)) / 255.0
-        return lum > 0.55 ? .black : .white
+        func linear(_ channel: Int) -> Double {
+            let value = Double(channel) / 255
+            return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(c.red) + 0.7152 * linear(c.green) + 0.0722 * linear(c.blue)
+        return luminance > 0.179 ? .black : .white
     }
 }

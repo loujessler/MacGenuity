@@ -45,6 +45,9 @@ struct MacGenuityApp: App {
         )
         _updater = StateObject(wrappedValue: AppUpdater())
         viewModel.attach(settings: settings)
+        viewModel.showInputMonitoringHelp = { [weak viewModel] in
+            if let viewModel { InputMonitoringHelp.show(for: viewModel) }
+        }
 
         _viewModel = StateObject(wrappedValue: viewModel)
         _settings = StateObject(wrappedValue: settings)
@@ -56,7 +59,6 @@ struct MacGenuityApp: App {
         Task { @MainActor in
             viewModel.setPollInterval(settings.refreshInterval)
             settings.refreshLaunchAtLoginStatus()
-            await viewModel.requestAccessIfNeeded()
             viewModel.start()
             await viewModel.notifier.ensureAuthorized()
         }

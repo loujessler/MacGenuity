@@ -23,17 +23,21 @@ final class DeviceViewModel: ObservableObject {
     @Published private(set) var lastUpdate: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var microphones: [MicrophoneInfo] = []
-    @Published private(set) var lastControlMessage: String?
+    @Published private(set) var microphoneMessages: [UInt32: String] = [:]
+    @Published private(set) var lightingMessage: String?
+    @Published private(set) var dpiMessage: String?
+    @Published private(set) var buttonsMessage: String?
     @Published private(set) var quadCast2SState: QuadCast2SHardwareState = .disconnected
     @Published private(set) var quadCast2SControlMessage: String?
     @Published private(set) var accessState: HIDAccessState = .unknown
     @Published private(set) var activeProfile: ActiveProfileSnapshot?
-    /// All HyperX-shaped devices currently attached, deduped by VID:PID.
+    /// One representative interface per attached receiver.
     /// Populated on every refresh so the device-picker stays current.
     @Published private(set) var availableDevices: [DeviceFingerprint] = []
 
     /// The mouse currently targeted for control, including while connecting.
-    @Published private(set) var selectedDeviceKey: String?
+    @Published private(set) var selectedDevice: DeviceFingerprint?
+    var selectedDeviceKey: String? { selectedDevice?.stableKey }
 
     private let minimumPollInterval: TimeInterval = 15
     private(set) var pollInterval: TimeInterval = 60
@@ -50,14 +54,20 @@ final class DeviceViewModel: ObservableObject {
     private let logger: LoggerType
     private weak var settings: AppSettings?
 
+    var showInputMonitoringHelp: (() -> Void)?
+    private var requestedInputMonitoring = false
+    private var deniedAccessState: HIDAccessState?
     private var hidObserver: AnyCancellable?
     private var pollTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var lightingSaveTask: Task<Void, Never>?
+    private var lightingWriteInFlight = false
     private var microphoneObserver: NSObjectProtocol?
     /// Restores the previous lighting state after a DPI profile colour flash.
     /// Cancellable so rapid radio clicks coalesce into one final restore.
     private var dpiPreviewRestoreTask: Task<Void, Never>?
+    private var dpiFlashRestoreState: DeviceLightingState?
+    private var dpiSelectionRevision: UInt64 = 0
 
     /// Last fingerprint we've seen connected. Used to detect device-switch
     /// events and reload per-device state.
@@ -161,34 +171,39 @@ final class DeviceViewModel: ObservableObject {
 
     // MARK: - Permission
 
-    func refreshAccessState() {
-        accessState = deviceService.currentAccessState()
-    }
-
-    func requestAccess() async {
-        accessState = await deviceService.requestAccess()
-        if accessState == .granted {
-            await refresh()
-        }
-    }
-
-    /// One-shot first-launch helper. If macOS has never seen us ask for
-    /// Input Monitoring, `currentAccessState()` returns `.unknown` and
-    /// no system prompt is ever shown — `IOHIDRequestAccess` is what
-    /// actually triggers the TCC dialog. Call this at app startup so
-    /// the user gets the standard "MacGenuity wants to monitor input"
-    /// alert instead of silently broken HID probing.
-    func requestAccessIfNeeded() async {
-        let state = deviceService.currentAccessState()
+    private func handleAccessDenied(_ checkedState: HIDAccessState? = nil) async {
+        let state = checkedState ?? deviceService.currentAccessState()
+        guard deniedAccessState != state else { return }
+        // Discard results still in flight for the connection that lost access.
+        selectionGeneration &+= 1
+        let generation = selectionGeneration
         accessState = state
-        guard state != .granted else { return }
-        logger.info(.app, "startup: requesting Input Monitoring access")
-        // Do not delay the other startup permissions with a full HID probe.
-        accessState = await deviceService.requestAccess()
-    }
+        deniedAccessState = state
+        clearDeviceState()
+        if accessState == .granted {
+            let message = "macOS denied access to the device. Reconnect it and try again."
+            lastError = message
+            status = .error(message)
+            return
+        }
 
-    func openInputMonitoringSettings() {
-        HIDPermission.openSystemSettings()
+        let shouldShowHelp = status != .permissionRequired
+        status = .permissionRequired
+        lastError = PermissionError.inputMonitoringDenied.errorDescription
+        if accessState == .unknown && !requestedInputMonitoring {
+            requestedInputMonitoring = true
+            let result = await deviceService.requestAccess()
+            guard generation == selectionGeneration else { return }
+            accessState = result
+            if result == .granted {
+                deniedAccessState = nil
+                await refresh()
+                return
+            }
+            deniedAccessState = result
+        }
+
+        if shouldShowHelp { showInputMonitoringHelp?() }
     }
 
     // MARK: - Refresh
@@ -208,6 +223,7 @@ final class DeviceViewModel: ObservableObject {
 
     private func refreshMicrophones() {
         microphones = audioService.connectedMicrophones()
+        microphoneMessages = microphoneMessages.filter { id, _ in microphones.contains { $0.id == id } }
     }
 
     private func refreshOnce() async {
@@ -217,11 +233,13 @@ final class DeviceViewModel: ObservableObject {
         // Enumeration can block in IOKit; run it on the service actor.
         let devices = await deviceService.availableDevices()
         guard generation == selectionGeneration else { return }
+        if devices != availableDevices { deviceStates.setConnectedDevices(devices) }
         self.availableDevices = devices
 
-        let mouse = devices.first { $0.stableKey == selectedDeviceKey }
+        let mouse = devices.first { selectedDevice?.matchesAttachment($0) == true }
+            ?? devices.first { $0.stableKey == selectedDeviceKey }
             ?? devices.first(where: registry.supportsMouseControls)
-        if mouse?.stableKey != selectedDeviceKey {
+        if mouse != selectedDevice {
             beginSelection(mouse)
             generation = selectionGeneration
             await deviceService.setActiveDevice(mouse)
@@ -241,19 +259,17 @@ final class DeviceViewModel: ObservableObject {
             quadCast2SControlMessage = nil
         }
 
-        if accessState == .denied {
-            guard generation == selectionGeneration else { return }
-            clearDeviceState()
-            self.status = .permissionRequired
-            self.lastError = PermissionError.inputMonitoringDenied.errorDescription
-            return
-        }
-
         guard generation == selectionGeneration else { return }
-        guard mouse != nil else {
+        guard let mouse else {
             clearDeviceState()
             status = .disconnected
             lastError = nil
+            return
+        }
+        guard deniedAccessState != accessState else { return }
+        deniedAccessState = nil
+        if !mouse.isVendorControlInterface && accessState != .granted {
+            await handleAccessDenied(accessState)
             return
         }
 
@@ -263,7 +279,6 @@ final class DeviceViewModel: ObservableObject {
             guard generation == selectionGeneration else { return }
             let newKey = newProfile?.fingerprint.stableKey
             self.activeProfile = newProfile
-            self.selectedDeviceKey = newKey
 
             // Detect device-switch and CLEAR cached state. Without this,
             // unplugging a Pulsefire while a QuadCast remains attached
@@ -298,8 +313,9 @@ final class DeviceViewModel: ObservableObject {
                         percent: battery.percent,
                         threshold: settings.lowBatteryThreshold,
                         isCharging: battery.isCharging,
-                        deviceName: info?.displayName
+                        deviceName: info?.displayName ?? mouse.product, deviceKey: mouse.stableKey
                     )
+                    guard generation == selectionGeneration else { return }
                 }
             } else {
                 // Defensive: if the active profile genuinely has no
@@ -319,10 +335,7 @@ final class DeviceViewModel: ObservableObject {
             }
         } catch HIDError.notPermitted {
             guard generation == selectionGeneration else { return }
-            clearDeviceState()
-            accessState = .denied
-            self.status = .permissionRequired
-            self.lastError = PermissionError.inputMonitoringDenied.errorDescription
+            await handleAccessDenied()
         } catch HIDError.deviceNotFound {
             guard generation == selectionGeneration else { return }
             clearDeviceState()
@@ -342,6 +355,8 @@ final class DeviceViewModel: ObservableObject {
 
     private func cancelLightingTasks() {
         lightingGeneration &+= 1
+        lightingWriteInFlight = false
+        dpiFlashRestoreState = nil
         keepaliveTask?.cancel(); keepaliveTask = nil
         lightingSaveTask?.cancel(); lightingSaveTask = nil
         dpiPreviewRestoreTask?.cancel(); dpiPreviewRestoreTask = nil
@@ -349,6 +364,9 @@ final class DeviceViewModel: ObservableObject {
 
     private func clearDeviceState() {
         cancelLightingTasks()
+        lightingMessage = nil
+        dpiMessage = nil
+        buttonsMessage = nil
         info = nil
         battery = nil
         lastUpdate = nil
@@ -359,10 +377,12 @@ final class DeviceViewModel: ObservableObject {
     // MARK: - Lighting / DPI
 
     func applyLighting(state: DeviceLightingState, persist: Bool = true) async {
+        guard let fingerprint = activeProfile?.fingerprint else { return }
         cancelLightingTasks()
-        let fingerprint = activeProfile?.fingerprint
         let generation = selectionGeneration
         let lightingRevision = lightingGeneration
+        lightingWriteInFlight = true
+        defer { if lightingGeneration == lightingRevision { lightingWriteInFlight = false } }
 
         // Opacity is software-side: pre-multiply the RGB before sending.
         // This applies to all effects (static, breathing, etc.) and is
@@ -376,16 +396,14 @@ final class DeviceViewModel: ObservableObject {
                 color: wireColor,
                 brightness: state.brightness,
                 speed: state.speed,
-                includeHasteProbe: persist && state.includeHasteProbe, persist: persist
+                includeHasteProbe: persist && state.effect == .staticColor && state.includeHasteProbe, persist: persist
             )
             // Persist as the last-applied state for THIS device.
             guard generation == selectionGeneration,
                   lightingRevision == lightingGeneration else { return }
             if persist { presetStore.recordColor(state.color) }
-            if let fp = fingerprint {
-                deviceStates.record(lighting: state, for: fp)
-            }
-            lastControlMessage = persist ? "Lighting saved" : "Previewing lighting…"
+            deviceStates.record(lighting: state, for: fingerprint)
+            lightingMessage = persist ? "Lighting saved" : "Previewing lighting…"
             if persist {
                 if state.includeHasteProbe && state.effect == .staticColor {
                     startKeepalive(color: wireColor)
@@ -407,12 +425,11 @@ final class DeviceViewModel: ObservableObject {
         } catch HIDError.notPermitted {
             guard generation == selectionGeneration,
                   lightingRevision == lightingGeneration else { return }
-            accessState = .denied
-            lastControlMessage = "Permission required"
+            await handleAccessDenied()
         } catch {
             guard generation == selectionGeneration,
                   lightingRevision == lightingGeneration else { return }
-            lastControlMessage = "Lighting failed: \(error.localizedDescription)"
+            lightingMessage = "Lighting failed: \(error.localizedDescription)"
             logger.error(.lighting, "applyLighting: \(error.localizedDescription)")
         }
     }
@@ -433,81 +450,74 @@ final class DeviceViewModel: ObservableObject {
         ))
     }
 
-    private func sendLightingFrame(target: LEDTarget, effect: LEDEffect,
-                                   color: RGBColor, brightness: Int, speed: Int) async {
-        do {
-            try await deviceService.applyLighting(
-                target: target, effect: effect, color: color,
-                brightness: brightness, speed: speed,
-                includeHasteProbe: false, persist: false
-            )
-        } catch HIDError.notPermitted {
-            accessState = .denied
-        } catch {
-            // Live updates fire often; do not flood the UI with transient
-            // errors — the user will see the issue on the next `Apply`.
-            logger.debug(.lighting, "stream frame failed: \(error.localizedDescription)")
+    private func restoreDPIFlashIfNeeded() async throws {
+        guard let state = dpiFlashRestoreState else { return }
+        let revision = lightingGeneration
+        dpiPreviewRestoreTask?.cancel()
+        dpiPreviewRestoreTask = nil
+        try await deviceService.applyLighting(
+            target: state.target, effect: state.effect, color: state.effectiveColor,
+            brightness: state.brightness, speed: state.speed, includeHasteProbe: false, persist: false
+        )
+        guard revision == lightingGeneration else { return }
+        dpiFlashRestoreState = nil
+        if state.includeHasteProbe && state.effect == .staticColor {
+            startKeepalive(color: state.effectiveColor)
         }
     }
 
     func applyPreset(_ preset: LightingPreset) async {
-        await applyLighting(state: DeviceLightingState(
-            target: preset.target,
-            effect: preset.effect,
-            color: preset.color,
-            brightness: preset.brightness,
-            opacity: preset.opacity,
-            speed: preset.speed,
-            includeHasteProbe: preset.includeHasteProbe
-        ))
+        await applyLighting(state: preset.lightingState)
     }
 
     /// NGENUITY-style: write every profile (DPI + colour + enable bitmap)
     /// and select the active one in a single batch. Used by the new DPI
     /// pane that mirrors NGENUITY's UX.
     func applyDPIBatch(levels: [DPILevel], activeProfile: Int) async {
-        cancelLightingTasks()
-        let fingerprint = self.activeProfile?.fingerprint
+        guard let fingerprint = self.activeProfile?.fingerprint else { return }
         let generation = selectionGeneration
+        dpiSelectionRevision &+= 1
+        let revision = dpiSelectionRevision
         let state = DeviceDPIState(levels: levels, activeProfile: activeProfile).normalized()
         do {
+            try await restoreDPIFlashIfNeeded()
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
             try await deviceService.applyDPIBatch(levels: state.levels,
                                                   activeProfile: state.activeProfile)
-            guard generation == selectionGeneration else { return }
-            if let fp = fingerprint {
-                deviceStates.record(
-                    dpi: state,
-                    for: fp
-                )
-            }
-            lastControlMessage = "DPI batch applied (active = \(activeProfile))"
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
+            deviceStates.record(dpi: state, for: fingerprint)
+            dpiMessage = "DPI settings saved · active level \(state.activeProfile)"
         } catch HIDError.notPermitted {
-            accessState = .denied
-            lastControlMessage = "Permission required"
+            guard generation == selectionGeneration else { return }
+            await handleAccessDenied()
         } catch HIDError.deviceNotFound {
-            lastControlMessage = "Device not found — replug receiver"
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
+            dpiMessage = "Mouse disconnected. Reconnect the receiver and try again."
         } catch {
-            lastControlMessage = "DPI batch failed: \(error.localizedDescription)"
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
+            dpiMessage = "DPI settings failed: \(error.localizedDescription)"
             logger.error(.hid, "applyDPIBatch: \(error.localizedDescription)")
         }
     }
 
     func applyDPI(profile: Int, dpi: Int) async {
-        cancelLightingTasks()
-        let fingerprint = activeProfile?.fingerprint
+        guard let fingerprint = activeProfile?.fingerprint else { return }
         let generation = selectionGeneration
+        dpiSelectionRevision &+= 1
+        let revision = dpiSelectionRevision
         do {
+            try await restoreDPIFlashIfNeeded()
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
             try await deviceService.applyDPI(profile: profile, dpi: dpi)
-            guard generation == selectionGeneration else { return }
-            if let fp = fingerprint {
-                deviceStates.record(activeProfile: profile, dpi: dpi, for: fp)
-            }
-            lastControlMessage = "DPI level \(profile) set to \(dpi)"
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
+            deviceStates.record(activeProfile: profile, dpi: dpi, for: fingerprint)
+            dpiMessage = "DPI level \(profile) set to \(dpi)"
         } catch HIDError.notPermitted {
-            accessState = .denied
-            lastControlMessage = "Permission required"
+            guard generation == selectionGeneration else { return }
+            await handleAccessDenied()
         } catch {
-            lastControlMessage = "DPI failed: \(error.localizedDescription)"
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
+            dpiMessage = "DPI failed: \(error.localizedDescription)"
             logger.error(.hid, "applyDPI: \(error.localizedDescription)")
         }
     }
@@ -518,7 +528,7 @@ final class DeviceViewModel: ObservableObject {
     /// refresh so the UI mirrors what actually happened on the device.
     func setMicrophoneMute(_ muted: Bool, for mic: MicrophoneInfo) async {
         let ok = audioService.setMicrophoneMute(muted, deviceID: mic.id)
-        lastControlMessage = ok
+        microphoneMessages[mic.id] = ok
             ? "Microphone \(muted ? "muted" : "unmuted")"
             : "Mute not settable (use the on-device tap-to-mute)"
         refreshMicrophones()
@@ -530,11 +540,7 @@ final class DeviceViewModel: ObservableObject {
     func setMicrophoneVolume(_ percent: Int, for mic: MicrophoneInfo) async {
         let scalar = Float(max(0, min(100, percent))) / 100.0
         let ok = audioService.setMicrophoneVolume(scalar, deviceID: mic.id)
-        if !ok {
-            lastControlMessage = "Input volume cannot be changed through CoreAudio"
-        } else {
-            lastControlMessage = nil
-        }
+        microphoneMessages[mic.id] = ok ? nil : "Input volume cannot be changed through CoreAudio"
         refreshMicrophones()
     }
 
@@ -570,6 +576,7 @@ final class DeviceViewModel: ObservableObject {
         _ source: QuadCast2SEffectConfiguration,
         for microphone: MicrophoneInfo
     ) async {
+        guard canControlLighting(for: microphone) else { return }
         let configuration = source.normalized()
         let mode: QuadCast2SLightingMode = configuration.kind == .solid
             ? .staticColor
@@ -585,6 +592,8 @@ final class DeviceViewModel: ObservableObject {
                 ? "\(configuration.kind.title) is running"
                 : "\(configuration.kind.title) applied"
             await refreshQuadCast2S()
+        } catch is CancellationError {
+            return
         } catch QuadCast2SError.notPermitted {
             quadCast2SControlMessage = QuadCast2SError.notPermitted.localizedDescription
             await refreshQuadCast2S()
@@ -601,6 +610,7 @@ final class DeviceViewModel: ObservableObject {
     }
 
     func restoreQuadCast2SAutonomousLighting(for microphone: MicrophoneInfo) async {
+        guard canControlLighting(for: microphone) else { return }
         do {
             try await quadCast2SService.restoreAutonomousLighting()
             var preference = quadCast2SStates.preference(for: microphone)
@@ -608,6 +618,8 @@ final class DeviceViewModel: ObservableObject {
             quadCast2SStates.record(preference, for: microphone)
             quadCast2SControlMessage = "Device animation restored"
             await refreshQuadCast2S()
+        } catch is CancellationError {
+            return
         } catch QuadCast2SError.notPermitted {
             quadCast2SControlMessage = QuadCast2SError.notPermitted.localizedDescription
             await refreshQuadCast2S()
@@ -617,32 +629,48 @@ final class DeviceViewModel: ObservableObject {
         }
     }
 
+    private func canControlLighting(for microphone: MicrophoneInfo) -> Bool {
+        let attached = microphones.filter(\.isQuadCast2S)
+        guard attached.count <= 1 else {
+            quadCast2SControlMessage = QuadCast2SError.ambiguousController.localizedDescription
+            return false
+        }
+        return attached.first?.id == microphone.id && attached.first?.uid == microphone.uid
+    }
+
     // MARK: - Buttons
 
     /// Send the full set of `0xD4` packets followed by a single commit,
     /// then mirror the new mapping into per-device state so reopening
     /// the editor shows what the device actually has.
-    func applyButtonAssignments(_ assignments: [ButtonAssignment]) async {
-        cancelLightingTasks()
-        let fingerprint = activeProfile?.fingerprint
+    @discardableResult
+    func applyButtonAssignments(_ assignments: [ButtonAssignment]) async -> Bool {
+        let changes = assignments.filter { PhysicalButton.remappable.contains($0.button) }
+        guard let fingerprint = activeProfile?.fingerprint, !changes.isEmpty else { return false }
         let generation = selectionGeneration
         do {
-            try await deviceService.applyButtonAssignments(assignments)
-            guard generation == selectionGeneration else { return }
-            if let fp = fingerprint {
-                deviceStates.record(buttons: DeviceButtonState(assignments: assignments),
-                                    for: fp)
+            try await restoreDPIFlashIfNeeded()
+            guard generation == selectionGeneration else { return false }
+            try await deviceService.applyButtonAssignments(changes)
+            guard generation == selectionGeneration else { return false }
+            deviceStates.update(fingerprint) { state in
+                state.buttons.assignments.removeAll { existing in changes.contains { $0.button == existing.button } }
+                state.buttons.assignments.append(contentsOf: changes)
             }
-            lastControlMessage = "Button assignments applied"
+            buttonsMessage = "Button assignments applied"
+            return true
         } catch HIDError.notPermitted {
-            accessState = .denied
-            lastControlMessage = "Permission required"
+            guard generation == selectionGeneration else { return false }
+            await handleAccessDenied()
         } catch HIDError.deviceNotFound {
-            lastControlMessage = "Device not found — replug receiver"
+            guard generation == selectionGeneration else { return false }
+            buttonsMessage = "Mouse disconnected. Reconnect the receiver and try again."
         } catch {
-            lastControlMessage = "Buttons failed: \(error.localizedDescription)"
+            guard generation == selectionGeneration else { return false }
+            buttonsMessage = "Buttons failed: \(error.localizedDescription)"
             logger.error(.hid, "applyButtonAssignments: \(error.localizedDescription)")
         }
+        return false
     }
 
     // MARK: - Device selection
@@ -655,86 +683,79 @@ final class DeviceViewModel: ObservableObject {
 
     private func beginSelection(_ fingerprint: DeviceFingerprint?) {
         selectionGeneration &+= 1
+        deniedAccessState = nil
         clearDeviceState()
-        lastControlMessage = nil
         lastError = nil
         status = .unknown
-        selectedDeviceKey = fingerprint?.stableKey
+        selectedDevice = fingerprint
+        history.selectDevice(fingerprint)
     }
 
-    /// Live-preview helper: send the `D3 00 + commit` select packet AND
-    /// flash the profile's indicator colour through the LED via a one-shot
-    /// `D2` static-colour packet so the user gets visual feedback. The
-    /// previous lighting state is automatically restored after
-    /// `dpiPreviewDuration` so this acts as a non-persistent preview —
-    /// only the explicit "Apply lighting" path persists.
     private static let dpiPreviewDuration: TimeInterval = 1.5
 
-    func selectDPIProfile(_ profile: Int, previewColor: RGBColor) async {
-        // Cancel any in-flight restore from a previous click.
-        cancelLightingTasks()
+    @discardableResult
+    func selectDPIProfile(_ profile: Int, previewColor: RGBColor) async -> Bool {
+        guard let fingerprint = activeProfile?.fingerprint else { return false }
         let generation = selectionGeneration
         let lightingRevision = lightingGeneration
-        let fingerprint = activeProfile?.fingerprint
-
-        // Capture the lighting state to restore BEFORE the flash. If the
-        // user has never applied lighting, this is the default (red,
-        // brightness 100, opacity 255). Keepalive — if any — is cancelled
-        // by the upcoming applyLighting calls.
-        let restoreState = currentDeviceState.lighting
-
+        dpiSelectionRevision &+= 1
+        let revision = dpiSelectionRevision
         do {
-            // 1. Apply the DPI select packet (D3 00 + commit). DPI
-            //    actually changes here.
+            // The firmware commit also persists the current LED state.
+            try await restoreDPIFlashIfNeeded()
+            guard generation == selectionGeneration, revision == dpiSelectionRevision else { return false }
             try await deviceService.selectDPIProfile(profile)
-            guard generation == selectionGeneration,
-                  lightingRevision == lightingGeneration else { return }
-            if let fp = fingerprint {
-                deviceStates.update(fp) { $0.dpi.activeProfile = profile }
+        } catch HIDError.notPermitted {
+            if generation == selectionGeneration { await handleAccessDenied() }
+            return false
+        } catch {
+            if generation == selectionGeneration, revision == dpiSelectionRevision {
+                dpiMessage = "Couldn’t select DPI level: \(error.localizedDescription)"
             }
+            return false
+        }
+        guard generation == selectionGeneration, revision == dpiSelectionRevision else { return false }
+        deviceStates.update(fingerprint) { $0.dpi.activeProfile = profile }
+        dpiMessage = "DPI level \(profile) selected"
 
-            // 2. Push the profile's colour to the LED for visible feedback.
-            //    Use the preview-grade `sendLightingFrame` so we don't
-            //    spawn a haste keepalive or write the colour into preset
-            //    history — this is a TRANSIENT flash, not user intent.
-            await sendLightingFrame(
-                target: restoreState.target,
-                effect: .staticColor,
-                color: previewColor.clamped(),
-                brightness: 100,
-                speed: 0
+        // A pending user colour takes precedence over temporary visual feedback.
+        guard lightingRevision == lightingGeneration, !lightingWriteInFlight,
+              lightingSaveTask == nil else { return true }
+        cancelLightingTasks()
+        let flashRevision = lightingGeneration
+        let state = currentDeviceState.lighting
+        dpiFlashRestoreState = state
+        do {
+            try await deviceService.applyLighting(
+                target: state.target, effect: .staticColor, color: previewColor.clamped(),
+                brightness: 100, speed: 0, includeHasteProbe: false, persist: false
             )
         } catch HIDError.notPermitted {
-            accessState = .denied
-            return
+            if generation == selectionGeneration { await handleAccessDenied() }
+            return true
         } catch {
-            logger.warning(.hid, "selectDPIProfile preview failed: \(error.localizedDescription)")
-            return
+            logger.warning(.lighting, "DPI indicator failed: \(error.localizedDescription)")
         }
 
-        // 3. Schedule a restore of the previous lighting after the
-        //    preview window. Cancellable so consecutive clicks within
-        //    the window only restore once at the end.
-        let duration = UInt64(Self.dpiPreviewDuration * 1_000_000_000)
-        guard generation == selectionGeneration,
-              lightingRevision == lightingGeneration else { return }
+        guard generation == selectionGeneration, revision == dpiSelectionRevision else { return false }
+        guard flashRevision == lightingGeneration, dpiFlashRestoreState != nil else { return true }
         dpiPreviewRestoreTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: duration)
-            guard !Task.isCancelled, let self,
-                  self.selectionGeneration == generation,
-                  self.lightingGeneration == lightingRevision else { return }
-            await self.sendLightingFrame(
-                target: restoreState.target,
-                effect: restoreState.effect,
-                color: restoreState.effectiveColor,
-                brightness: restoreState.brightness,
-                speed: restoreState.speed
-            )
-            if !Task.isCancelled, restoreState.includeHasteProbe,
-               restoreState.effect == .staticColor {
-                self.startKeepalive(color: restoreState.effectiveColor)
+            do {
+                try await Task.sleep(nanoseconds: UInt64(Self.dpiPreviewDuration * 1_000_000_000))
+                guard let self, self.lightingGeneration == flashRevision else { return }
+                self.dpiPreviewRestoreTask = nil
+                try await self.restoreDPIFlashIfNeeded()
+            } catch is CancellationError {
+                return
+            } catch HIDError.notPermitted {
+                guard let self, self.lightingGeneration == flashRevision else { return }
+                await self.handleAccessDenied()
+            } catch {
+                guard let self, self.lightingGeneration == flashRevision else { return }
+                self.lightingMessage = "Couldn’t restore lighting: \(error.localizedDescription)"
             }
         }
+        return true
     }
 
     // MARK: - Keepalive
@@ -742,12 +763,14 @@ final class DeviceViewModel: ObservableObject {
     private func startKeepalive(color: RGBColor) {
         let service = deviceService
         let log = logger
+        keepaliveTask?.cancel()
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
                     try await service.sendHasteDirectFrame(color)
                 } catch HIDError.notPermitted {
-                    self?.accessState = .denied
+                    guard !Task.isCancelled else { return }
+                    await self?.handleAccessDenied()
                     return
                 } catch {
                     log.warning(.lighting, "keepalive: \(error.localizedDescription)")
@@ -756,6 +779,5 @@ final class DeviceViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
-        lastControlMessage = "Static lighting keepalive started"
     }
 }

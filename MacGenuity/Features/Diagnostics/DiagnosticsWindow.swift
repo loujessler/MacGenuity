@@ -18,8 +18,11 @@ struct DiagnosticsWindow: View {
     @State private var rawHex: String = "50 00 00 00"
     @State private var sendKind: ProfilePacket.SendKind = .output
     @State private var receiveKind: ProfilePacket.ReceiveKind = .input
-    @State private var lastResponse: Data?
-    @State private var lastResponseError: String?
+    private enum SendResult: Equatable {
+        case idle, sending, sent, response(Data), failure(String)
+    }
+    @State private var sendResult: SendResult = .idle
+    @State private var scanRequest = 0
     @State private var levelFilter: LogLevel = .debug
     @State private var channelFilter: LogChannel? = nil
 
@@ -31,23 +34,27 @@ struct DiagnosticsWindow: View {
 
     var body: some View {
         VSplitView {
-            VStack(alignment: .leading, spacing: 8) {
-                candidatesSection
-                Divider()
-                rawSenderSection
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    candidatesSection
+                    Divider()
+                    rawSenderSection
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(12)
             .frame(minHeight: 280)
 
             logsSection
                 .frame(minHeight: 200)
         }
         .frame(minWidth: 640, minHeight: 520)
-        .onAppear { refreshCandidates() }
-    }
-
-    private func refreshCandidates() {
-        candidates = viewModel.deviceService.diagnosticsCandidates()
+        .task(id: scanRequest) {
+            let devices = await viewModel.deviceService.diagnosticsCandidates()
+            if !Task.isCancelled { candidates = devices }
+        }
+        .onChange(of: viewModel.availableDevices) { _ in scanRequest += 1 }
+        .onChange(of: viewModel.activeProfile?.fingerprint) { _ in sendResult = .idle }
     }
 
     // MARK: - Candidates
@@ -63,7 +70,7 @@ struct DiagnosticsWindow: View {
                         .foregroundStyle(.green)
                 }
                 Button {
-                    refreshCandidates()
+                    scanRequest += 1
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -119,7 +126,7 @@ struct DiagnosticsWindow: View {
             HStack {
                 Text("Raw packet sender").font(.headline)
                 Spacer()
-                Text("First byte = command for response matching")
+                Text(viewModel.activeProfile?.fingerprint.product ?? "Connect a supported mouse to send")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
@@ -130,7 +137,7 @@ struct DiagnosticsWindow: View {
                     Text("Feature").tag(ProfilePacket.SendKind.feature)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 200)
+                .fixedSize()
 
                 Picker("Receive", selection: $receiveKind) {
                     Text("Input").tag(ProfilePacket.ReceiveKind.input)
@@ -138,7 +145,7 @@ struct DiagnosticsWindow: View {
                     Text("None").tag(ProfilePacket.ReceiveKind.none)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 220)
+                .fixedSize()
                 Spacer()
             }
 
@@ -147,17 +154,21 @@ struct DiagnosticsWindow: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
 
-                Button("Send") { Task { await sendRaw() } }
+                Button(sendResult == .sending ? "Sending…" : "Send") { Task { await sendRaw() } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(rawHex.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(viewModel.activeProfile == nil || sendResult == .sending || rawHex.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
-            if let err = lastResponseError {
+            switch sendResult {
+            case .idle, .sending:
+                EmptyView()
+            case .sent:
+                Text("Packet sent").font(.caption).foregroundStyle(.secondary)
+            case .failure(let err):
                 Text(err)
                     .font(.system(size: 11))
                     .foregroundStyle(.red)
-            }
-            if let response = lastResponse {
+            case .response(let response):
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text("Response (\(response.count) bytes)")
@@ -183,14 +194,13 @@ struct DiagnosticsWindow: View {
     }
 
     private func sendRaw() async {
+        guard let target = viewModel.activeProfile?.fingerprint, sendResult != .sending else { return }
         guard var bytes = Data.parseHex(rawHex) else {
-            lastResponseError = "Could not parse hex. Use space- or comma-separated hex bytes."
-            lastResponse = nil
+            sendResult = .failure("Could not parse hex. Use space- or comma-separated hex bytes.")
             return
         }
         guard bytes.count <= HIDTransport.packetSize else {
-            lastResponseError = "Packet exceeds 64 bytes; nothing was sent."
-            lastResponse = nil
+            sendResult = .failure("Packets can contain up to 64 bytes.")
             return
         }
         // Short commands are zero-padded; never silently truncate a command.
@@ -199,14 +209,14 @@ struct DiagnosticsWindow: View {
         }
 
         do {
-            lastResponseError = nil
+            sendResult = .sending
             let response = try await viewModel.deviceService.sendRawPacket(
-                bytes, sendKind: sendKind, receiveKind: receiveKind
+                bytes, to: target, sendKind: sendKind, receiveKind: receiveKind
             )
-            lastResponse = response ?? Data()
+            guard target == viewModel.activeProfile?.fingerprint else { return }
+            sendResult = response.map(SendResult.response) ?? .sent
         } catch {
-            lastResponseError = error.localizedDescription
-            lastResponse = nil
+            if target == viewModel.activeProfile?.fingerprint { sendResult = .failure(error.localizedDescription) }
         }
     }
 
@@ -285,10 +295,14 @@ struct DiagnosticsWindow: View {
     }
 
     private func format(_ entry: LogEntry) -> String {
+        "\(Self.timestampFormatter.string(from: entry.date)) [\(entry.level.label)] [\(entry.channel.rawValue)] \(entry.message)"
+    }
+
+    private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
-        return "\(formatter.string(from: entry.date)) [\(entry.level.label)] [\(entry.channel.rawValue)] \(entry.message)"
-    }
+        return formatter
+    }()
 
     private func color(for level: LogLevel) -> Color {
         switch level {

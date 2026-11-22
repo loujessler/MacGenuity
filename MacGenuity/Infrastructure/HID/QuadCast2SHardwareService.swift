@@ -19,6 +19,7 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     private var lastKnownLightingMode: QuadCast2SLightingMode?
     private var cachedAttributes: QuadCast2SLampArrayAttributes?
     private var cachedLamps: [QuadCast2SLamp]?
+    private var controllerFingerprint: DeviceFingerprint?
 
     private var animationTask: Task<Void, Never>?
     private var animationGeneration: UInt64 = 0
@@ -30,22 +31,18 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     }
 
     func snapshot() async -> QuadCast2SHardwareState {
-        let candidates = HIDDeviceFinder.discoverCandidates(logger: logger)
-        guard let lampArray = candidates.first(where: isLampArray) else {
-            animationGeneration &+= 1
-            animationTask?.cancel()
-            animationTask = nil
-            cachedAttributes = nil
-            cachedLamps = nil
-            lastKnownLightingMode = nil
+        let lampArray: HIDDeviceCandidate
+        do {
+            lampArray = try lampArrayCandidate()
+        } catch {
             return QuadCast2SHardwareState(
-                isConnected: false,
+                isConnected: (error as? QuadCast2SError) == .ambiguousController,
                 hasLightingInterface: false,
                 isAnimating: false,
                 lampCount: nil,
                 maximumFramesPerSecond: nil,
                 lightingMode: nil,
-                errorMessage: QuadCast2SError.deviceNotFound.localizedDescription
+                errorMessage: error.localizedDescription
             )
         }
 
@@ -161,6 +158,7 @@ actor QuadCast2SHardwareService: QuadCast2SService {
         let task = Task { [weak self] in
             guard let self else { return }
             await self.runAnimation(
+                device: candidate.device,
                 configuration: configuration,
                 lamps: layout.lamps,
                 attributes: layout.attributes,
@@ -208,20 +206,21 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     // MARK: - Animation
 
     private func runAnimation(
+        device: IOHIDDevice,
         configuration: QuadCast2SEffectConfiguration,
         lamps: [QuadCast2SLamp],
         attributes: QuadCast2SLampArrayAttributes,
         generation: UInt64
     ) async {
         do {
-            let candidate = try lampArrayCandidate()
-            try openDevice(candidate.device)
-            defer { closeDevice(candidate.device) }
+            try Task.checkCancellation()
+            try openDevice(device)
+            defer { closeDevice(device) }
 
             do {
                 try writeFeatureReport(
                     Data([0x06, 0x00]),
-                    to: candidate.device
+                    to: device
                 )
                 try await Task.sleep(
                     nanoseconds: updateIntervalNanoseconds(attributes)
@@ -239,7 +238,7 @@ actor QuadCast2SHardwareService: QuadCast2SService {
                     )
                     try writeFrame(
                         values,
-                        to: candidate.device,
+                        to: device,
                         lampCount: attributes.lampCount
                     )
 
@@ -254,7 +253,7 @@ actor QuadCast2SHardwareService: QuadCast2SService {
                 if !Task.isCancelled {
                     try? writeFeatureReport(
                         QuadCast2SProtocol.restoreAutonomousLightingReport,
-                        to: candidate.device
+                        to: device
                     )
                     throw error
                 }
@@ -388,11 +387,20 @@ actor QuadCast2SHardwareService: QuadCast2SService {
     }
 
     private func lampArrayCandidate() throws -> HIDDeviceCandidate {
-        guard let candidate = HIDDeviceFinder
-            .discoverCandidates(logger: logger)
-            .first(where: isLampArray)
-        else {
-            throw QuadCast2SError.interfaceNotFound("LampArray")
+        let matches = HIDDeviceFinder.discoverCandidates(logger: logger).filter(isLampArray)
+        let candidate = matches.count == 1 ? matches[0] : nil
+        if candidate?.fingerprint != controllerFingerprint {
+            controllerFingerprint = candidate?.fingerprint
+            animationGeneration &+= 1
+            animationTask?.cancel()
+            animationTask = nil
+            animationError = nil
+            cachedAttributes = nil
+            cachedLamps = nil
+            lastKnownLightingMode = nil
+        }
+        guard let candidate else {
+            throw matches.isEmpty ? QuadCast2SError.deviceNotFound : .ambiguousController
         }
         return candidate
     }

@@ -59,7 +59,7 @@ mkdir -p "${APP_BUNDLE}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 # Copy Info.plist.
-cp "${SRC_DIR}/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
+install -m 0644 "${SRC_DIR}/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 
 # Copy resource files
 cp "${SRC_DIR}/Resources/donations.json" "${APP_BUNDLE}/Contents/Resources/donations.json"
@@ -188,14 +188,8 @@ else
         "${SOURCES[@]}"
 fi
 
-# Pick a code-signing identity. macOS TCC binds Input Monitoring
-# permission to the cdhash of the signing identity — ad-hoc signing
-# regenerates the cdhash on every build, which causes the symptom of
-# "toggle is ON in System Settings, but IOHIDRequestAccess returns
-# denied". A stable identity (self-signed certificate kept in the
-# login keychain, or a real Developer ID) makes the grant survive
-# rebuilds.
-#
+# TCC identifies the app by its designated requirement. With ad-hoc
+# signing the requirement is tied to the code hash of a particular build.
 # Override with: HYPERX_SIGN_IDENTITY="Developer ID Application: ..."
 # Or pass HYPERX_SIGN_IDENTITY="-" to force ad-hoc.
 SIGN_IDENTITY="${HYPERX_SIGN_IDENTITY:-}"
@@ -203,11 +197,7 @@ if [[ -z "${SIGN_IDENTITY}" ]]; then
     # Preference order:
     #   1. A dedicated self-signed "MacGenuity Dev" identity (recommended
     #      for contributors — instructions in README).
-    #   2. Any "Apple Development" cert in the user's keychain. This
-    #      gives a STABLE cdhash across rebuilds, which means Input
-    #      Monitoring permission granted once survives every later build.
-    #      Falling back to ad-hoc regenerates the cdhash on every build
-    #      and forces the user to re-grant permission constantly.
+    #   2. An Apple Development identity with a stable designated requirement.
     IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
     if echo "${IDENTITIES}" | grep -q '"MacGenuity Dev"'; then
         SIGN_IDENTITY="MacGenuity Dev"

@@ -95,7 +95,7 @@ Settings (⌘,) opens on **Devices**. Connecting a supported mouse selects it au
 ### System integration
 
 - Launch at login via `SMAppService`
-- First-launch Input Monitoring prompt triggered automatically via `IOHIDRequestAccess`
+- Automatic Input Monitoring request when a connected device requires it
 - One-click "Relaunch" button to pick up freshly-granted TCC permission
 - Structured file logging with rotation (5 MB cap)
 - `os_log` mirroring (subsystem `io.github.loujessler.macgenuity`)
@@ -181,9 +181,9 @@ MacGenuity/
 
 ### Permission handling
 
-The app uses `IOHIDCheckAccess` to determine the current Input Monitoring state and `IOHIDRequestAccess` to politely prompt for it. Mouse and keyboard transports are not opened while access is denied — that previously caused tight TCC retry loops and `TCC deny IOHIDDeviceOpen` log spam. Dedicated non-input interfaces, such as the QuadCast 2 S LampArray, are probed independently because macOS exposes them without Input Monitoring permission.
+MacGenuity checks the selected HID interface when it discovers a connected mouse. A vendor-defined control interface uses the access macOS grants to that interface. Standard input interfaces require Input Monitoring. A refusal from macOS stops further attempts until the grant or device changes.
 
-When permission is missing the menu shows a "Permission" section with **System Settings** (opens the Input Monitoring pane) and **Relaunch** (quits and immediately re-opens the app — required because macOS caches per-process TCC state and a running app can't see a freshly-granted permission until it restarts).
+When permission is needed, MacGenuity requests it once if the system has no decision yet. A recovery window and the menu provide **Open System Settings…** and **Relaunch**. **Already enabled?** includes a reset for this app's Input Monitoring entry. Relaunch waits for the old process to exit before opening the same app.
 
 ### HID layer hardening
 
@@ -235,7 +235,7 @@ checks the app signature and Applications link, then ejects it.
 
 To install, open the DMG, drag **MacGenuity** onto **Applications**, eject the
 image, and launch the installed app. Quit older copies before updating.
-Input Monitoring and notification authorization are requested at launch.
+Notification authorization is checked at launch. The app requests Input Monitoring when the attached device needs it.
 
 For a notarized release, build with your `Developer ID Application` identity
 instead of `-`, then sign, submit and staple the DMG:
@@ -254,7 +254,7 @@ Developer ID credentials are required for that final signing/notarization step.
 
 - macOS 13 (Ventura) or later
 - Apple Silicon or Intel
-- Input Monitoring permission (granted from inside the app or from System Settings → Privacy & Security → Input Monitoring)
+- Input Monitoring for protected HID interfaces, enabled in System Settings → Privacy & Security → Input Monitoring
 
 ---
 
@@ -318,13 +318,13 @@ If the icon in **System Settings → Privacy & Security → Input Monitoring** s
 
 ## TCC and code signing
 
-macOS binds Input Monitoring permission to the **cdhash** (signing hash) of the binary, not its file path or bundle identifier. Ad-hoc signing (`codesign --sign -`) recomputes the cdhash on every build, so a previously-granted toggle in System Settings can show "ON" while `IOHIDRequestAccess` still returns `denied`. The menu's permission section explains the situation and offers a **Relaunch** button — required because macOS caches per-process TCC state and a running app can't see a freshly-granted permission until it restarts.
+macOS uses the app’s code-signing designated requirement to track privacy grants. Ad-hoc releases have a requirement tied to the executable’s code hash, so replacing the app can invalidate a previous Input Monitoring grant. A stable Developer ID signing identity allows macOS to recognise subsequent versions. The Pulsefire Haste Wireless receiver can use its vendor-defined USB interface without this grant when macOS permits the connection.
 
 To make grants survive rebuilds during development, use a stable signing identity. `build.sh` auto-detects, in this order:
 
 1. `HYPERX_SIGN_IDENTITY` env var (explicit override).
 2. A self-signed identity named `MacGenuity Dev` in the login keychain.
-3. The first available `Apple Development:` cert (gives a stable cdhash).
+3. The first available `Apple Development:` cert (provides a stable signing identity).
 4. Ad-hoc fallback (cdhash changes every build).
 
 To create a self-signed identity:

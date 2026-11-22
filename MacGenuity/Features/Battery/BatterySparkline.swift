@@ -18,15 +18,19 @@ struct BatterySparkline: View {
 
     var body: some View {
         GeometryReader { geo in
-            let usable = samples.suffix(120)  // last ~10h at 5-min cadence
-            if usable.count >= 2 {
-                let path = makePath(in: geo.size, samples: Array(usable))
-                let fill = makeFill(in: geo.size, samples: Array(usable))
+            if let first = samples.first, let last = samples.last, last.date > first.date {
+                let path = makePath(in: geo.size, start: first.date, end: last.date)
                 ZStack {
-                    fill.fill(fillColor)
+                    Path { fill in
+                        fill.addPath(path)
+                        fill.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height))
+                        fill.addLine(to: CGPoint(x: 0, y: geo.size.height))
+                        fill.closeSubpath()
+                    }.fill(fillColor)
                     path.stroke(lineColor, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
                 }
-                .accessibilityLabel(accessibilityText(samples: Array(usable)))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityText(samples: samples))
             } else {
                 Text("Collecting…")
                     .font(.system(size: 10))
@@ -35,36 +39,16 @@ struct BatterySparkline: View {
         }
     }
 
-    private func point(_ sample: BatterySample, index: Int, count: Int, in size: CGSize) -> CGPoint {
-        let x = count <= 1 ? size.width / 2 : size.width * CGFloat(index) / CGFloat(count - 1)
+    private func makePath(in size: CGSize, start: Date, end: Date) -> Path {
+        let duration = end.timeIntervalSince(start)
         let span = range.upperBound - range.lowerBound
-        let yNorm = (Double(sample.percent) - range.lowerBound) / max(span, 0.0001)
-        let y = size.height * (1.0 - CGFloat(min(max(yNorm, 0), 1)))
-        return CGPoint(x: x, y: y)
-    }
-
-    private func makePath(in size: CGSize, samples: [BatterySample]) -> Path {
         var path = Path()
-        for (i, sample) in samples.enumerated() {
-            let p = point(sample, index: i, count: samples.count, in: size)
-            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+        for (index, sample) in samples.enumerated() {
+            let x = size.width * CGFloat(sample.date.timeIntervalSince(start) / duration)
+            let fraction = (Double(sample.percent) - range.lowerBound) / max(span, 0.0001)
+            let point = CGPoint(x: x, y: size.height * (1 - CGFloat(min(max(fraction, 0), 1))))
+            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
-        return path
-    }
-
-    private func makeFill(in size: CGSize, samples: [BatterySample]) -> Path {
-        var path = Path()
-        guard !samples.isEmpty else { return path }
-        let first = point(samples[0], index: 0, count: samples.count, in: size)
-        path.move(to: CGPoint(x: first.x, y: size.height))
-        path.addLine(to: first)
-        for (i, sample) in samples.enumerated().dropFirst() {
-            path.addLine(to: point(sample, index: i, count: samples.count, in: size))
-        }
-        let lastIndex = samples.count - 1
-        let last = point(samples[lastIndex], index: lastIndex, count: samples.count, in: size)
-        path.addLine(to: CGPoint(x: last.x, y: size.height))
-        path.closeSubpath()
         return path
     }
 

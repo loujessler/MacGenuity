@@ -15,7 +15,7 @@ final class Notifier {
 
     private let center = UNUserNotificationCenter.current()
     private var authorizationRequested = false
-    private var lastLowBatteryFireDate: Date?
+    private var lastLowBatteryFireDate: [String: Date] = [:]
     private let cooldownSeconds: TimeInterval = 60 * 30  // re-alert at most every 30 min
     private let logger: LoggerType
 
@@ -38,9 +38,9 @@ final class Notifier {
 
     /// Fire a low-battery notification if conditions warrant it.
     /// Throttled so we never spam the user.
-    func notifyLowBatteryIfNeeded(percent: Int, threshold: Int, isCharging: Bool, deviceName: String?) async {
+    func notifyLowBatteryIfNeeded(percent: Int, threshold: Int, isCharging: Bool, deviceName: String?, deviceKey: String) async {
         guard !isCharging, percent <= threshold else { return }
-        if let last = lastLowBatteryFireDate,
+        if let last = lastLowBatteryFireDate[deviceKey],
            Date().timeIntervalSince(last) < cooldownSeconds { return }
 
         await ensureAuthorized()
@@ -51,13 +51,13 @@ final class Notifier {
         content.sound = .default
 
         let request = UNNotificationRequest(
-            identifier: "lowBattery.\(percent)",
+            identifier: "lowBattery.\(deviceKey)",
             content: content,
             trigger: nil
         )
         do {
             try await center.add(request)
-            lastLowBatteryFireDate = Date()
+            lastLowBatteryFireDate[deviceKey] = Date()
             logger.info(.battery, "notify low battery percent=\(percent)")
         } catch {
             logger.warning(.app, "notifications: deliver failed: \(error.localizedDescription)")

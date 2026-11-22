@@ -16,8 +16,8 @@ enum ConfigurableDevice: Identifiable, Hashable {
 
     var id: String {
         switch self {
-        case .hid(let fp):       return "hid:" + fp.stableKey
-        case .microphone(let m): return "mic:" + m.uid
+        case .hid(let fp):       return "hid:" + fp.attachmentKey
+        case .microphone(let m): return m.uid.isEmpty ? "audio-id:\(m.id)" : "mic:" + m.uid
         }
     }
 
@@ -43,16 +43,11 @@ enum ConfigurableDevice: Identifiable, Hashable {
 
     /// SF Symbol name used in the sidebar.
     var iconName: String {
-        switch self {
-        case .hid(let fp):
-            // Audio-class devices sometimes show up on the HID bus too; pick
-            // an icon based on the product name when we can.
-            let name = fp.lowercaseProduct
-            if name.contains("cast") || name.contains("mic") { return "mic" }
-            if name.contains("cloud") || name.contains("headset") { return "headphones" }
-            return "computermouse"
-        case .microphone:
-            return "mic"
+        switch category {
+        case .microphone: return "mic"
+        case .headset: return "headphones"
+        case .mouse: return "computermouse"
+        case .other: return "cable.connector"
         }
     }
 
@@ -62,7 +57,7 @@ enum ConfigurableDevice: Identifiable, Hashable {
             let name = fp.lowercaseProduct
             if name.contains("cast") || name.contains("mic") { return .microphone }
             if name.contains("cloud") || name.contains("headset") { return .headset }
-            return .mouse
+            return name.contains("pulsefire") || name.contains("mouse") ? .mouse : .other
         case .microphone:
             return .microphone
         }

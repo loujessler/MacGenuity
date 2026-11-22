@@ -103,7 +103,7 @@ final class HIDTransport {
         IOHIDDeviceScheduleWithRunLoop(
             device,
             CFRunLoopGetMain(),
-            CFRunLoopMode.defaultMode.rawValue
+            CFRunLoopMode.commonModes.rawValue
         )
         isScheduled = true
         logger.debug(.hid, "transport: input callback scheduled on main run loop")
@@ -111,18 +111,12 @@ final class HIDTransport {
 
     private func unscheduleInputCallback() {
         guard isScheduled else { return }
-        IOHIDDeviceUnscheduleFromRunLoop(
-            device,
-            CFRunLoopGetMain(),
-            CFRunLoopMode.defaultMode.rawValue
-        )
-        IOHIDDeviceRegisterInputReportCallback(
-            device,
-            inputCapture.bufferPointer,
-            inputCapture.capacity,
-            nil,
-            nil
-        )
+        // Finish any callback already using the unretained context before it is released.
+        let unregister = { [device, inputCapture] in
+            IOHIDDeviceUnscheduleFromRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+            IOHIDDeviceRegisterInputReportCallback(device, inputCapture.bufferPointer, inputCapture.capacity, nil, nil)
+        }
+        if Thread.isMainThread { unregister() } else { DispatchQueue.main.sync(execute: unregister) }
         isScheduled = false
         logger.debug(.hid, "transport: input callback unscheduled")
     }
@@ -248,10 +242,10 @@ final class HIDTransport {
     }
 
     private static let inputCallback: IOHIDReportCallback = {
-        context, _, _, _, _, _, reportLength in
-        guard let context else { return }
+        context, result, _, _, _, report, reportLength in
+        guard result == kIOReturnSuccess, let context else { return }
         let capture = Unmanaged<InputReportCapture>.fromOpaque(context).takeUnretainedValue()
-        capture.handle(reportLength: reportLength)
+        capture.handle(report, length: reportLength)
     }
 }
 
@@ -302,7 +296,7 @@ private final class InputReportCapture {
         return data
     }
 
-    func handle(reportLength: CFIndex) {
+    func handle(_ report: UnsafePointer<UInt8>, length reportLength: CFIndex) {
         // Defensive bounds check — corrupted reports must never construct a
         // Data with a length larger than the buffer we registered.
         guard reportLength > 0, Int(reportLength) <= capacity else {
@@ -315,7 +309,7 @@ private final class InputReportCapture {
         defer { lock.unlock() }
         guard let command = expectedCommand, matched == nil else { return }
 
-        let data = Data(bytes: bufferPointer, count: Int(reportLength))
+        let data = Data(bytes: report, count: Int(reportLength))
         if PacketUtils.findCommandOffset(in: data, command: command) != nil {
             matched = data
         }

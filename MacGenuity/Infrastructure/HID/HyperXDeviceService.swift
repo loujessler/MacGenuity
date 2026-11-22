@@ -17,11 +17,7 @@ actor HyperXDeviceService: DeviceService {
     private(set) var activeProfile: DeviceProfile?
     private(set) var activeFingerprint: DeviceFingerprint?
 
-    /// Current mouse target. When set, `ensureTransport` only considers
-    /// candidates with matching VID:PID. When `nil` the service auto-picks
-    /// the highest-scoring available device (legacy behaviour).
-    private var preferredVendorID: Int?
-    private var preferredProductID: Int?
+    private var preferredDevice: DeviceFingerprint?
 
     /// Number of consecutive HID errors against the cached transport.
     /// macOS does not always return a clean "device gone" code after a
@@ -35,8 +31,7 @@ actor HyperXDeviceService: DeviceService {
 
     /// Long-lived manager for receiver attachment and removal events.
     /// Keeping a single manager scheduled on the main run
-    /// loop is the recommended pattern; opening it does not require Input
-    /// Monitoring permission.
+    /// loop delivers device notifications without opening input interfaces.
     private let removalManager: IOHIDManager
     private var removalContext: Unmanaged<DeviceRemovalContext>?
 
@@ -55,10 +50,9 @@ actor HyperXDeviceService: DeviceService {
         let context = removalContext
         DispatchQueue.main.async(execute: DispatchWorkItem {
             IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(),
-                                              CFRunLoopMode.defaultMode.rawValue)
+                                              CFRunLoopMode.commonModes.rawValue)
             IOHIDManagerRegisterDeviceMatchingCallback(manager, nil, nil)
             IOHIDManagerRegisterDeviceRemovalCallback(manager, nil, nil)
-            IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
             context?.release()
         })
     }
@@ -96,10 +90,9 @@ actor HyperXDeviceService: DeviceService {
         )
         IOHIDManagerScheduleWithRunLoop(removalManager,
                                         CFRunLoopGetMain(),
-                                        CFRunLoopMode.defaultMode.rawValue)
-        // Open the manager — tolerated even without Input Monitoring,
-        // because we never read input reports through it.
-        IOHIDManagerOpen(removalManager, IOOptionBits(kIOHIDOptionsTypeNone))
+                                        CFRunLoopMode.commonModes.rawValue)
+        // Matching and removal notifications only need a scheduled manager.
+        // Opening it would also open the receiver's keyboard and mouse interfaces.
     }
 
     private func handleDeviceRemoved(_ device: IOHIDDevice) {
@@ -107,6 +100,8 @@ actor HyperXDeviceService: DeviceService {
         let removedVID = HIDDeviceFinder.propertyInt(device, kIOHIDVendorIDKey)
         let removedPID = HIDDeviceFinder.propertyInt(device, kIOHIDProductIDKey)
         guard removedVID == active.vendorID, removedPID == active.productID else { return }
+        if let activeID = active.registryEntryID, let removedID = HIDDeviceFinder.registryEntryID(for: device),
+           activeID != removedID { return }
         logger.info(.hid, "device removed (VID=\(Hex.u16(removedVID)) PID=\(Hex.u16(removedPID))) — dropping transport")
         resetTransport()
     }
@@ -223,7 +218,7 @@ actor HyperXDeviceService: DeviceService {
             try send(commit, transport: transport)
         }
 
-        if includeHasteProbe, profile.capabilities.contains(.hasteDirect) {
+        if includeHasteProbe, effect == .staticColor, profile.capabilities.contains(.hasteDirect) {
             if let setup = profile.hasteSetupPacket() {
                 try send(setup, transport: transport)
             }
@@ -279,20 +274,14 @@ actor HyperXDeviceService: DeviceService {
     func availableDevices() -> [DeviceFingerprint] {
         // Keep synchronous IOKit enumeration off the UI actor.
         let devices = HIDDeviceFinder.discoverCandidates(logger: logger).map(\.fingerprint)
-        let groups = Dictionary(grouping: devices) { ($0.vendorID << 16) | $0.productID }
-        return groups.values.compactMap { registry.preferredInterface(in: $0) }.sorted {
-            ($0.product, $0.stableKey) < ($1.product, $1.stableKey)
-        }
+        return registry.representativeDevices(in: devices)
     }
 
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async {
+        preferredDevice = fingerprint
         if let fp = fingerprint {
-            preferredVendorID = fp.vendorID
-            preferredProductID = fp.productID
             logger.info(.hid, "selected device VID=\(Hex.u16(fp.vendorID)) PID=\(Hex.u16(fp.productID)) (\(fp.product))")
         } else {
-            preferredVendorID = nil
-            preferredProductID = nil
             logger.info(.hid, "cleared device selection — auto-pick")
         }
         // Drop the cached transport so the next call rediscovers.
@@ -347,6 +336,7 @@ actor HyperXDeviceService: DeviceService {
     }
 
     func sendHasteDirectFrame(_ color: RGBColor) async throws {
+        try Task.checkCancellation()
         try ensureTransport()
         guard let transport, let profile = activeProfile,
               profile.capabilities.contains(.hasteDirect),
@@ -361,10 +351,10 @@ actor HyperXDeviceService: DeviceService {
     /// Discover candidates without opening anything. Used by the diagnostics
     /// window so contributors can see all HyperX-shaped HID interfaces and
     /// pick which one their profile should match.
-    nonisolated func diagnosticsCandidates() -> [DiagnosticsCandidate] {
-        let candidates = HIDDeviceFinder.discoverCandidates(logger: FileLogger.shared)
+    func diagnosticsCandidates() -> [DiagnosticsCandidate] {
+        let candidates = HIDDeviceFinder.discoverCandidates(logger: logger)
         return candidates.map { c in
-            let resolved = ProfileRegistry.shared.resolve(for: c.fingerprint)
+            let resolved = registry.resolve(for: c.fingerprint)
             return DiagnosticsCandidate(
                 fingerprint: c.fingerprint,
                 summary: c.summary,
@@ -375,10 +365,11 @@ actor HyperXDeviceService: DeviceService {
 
     /// Send an arbitrary 64-byte packet. Used by the diagnostics window
     /// to probe new packet shapes without writing code first.
-    func sendRawPacket(_ bytes: Data,
+    func sendRawPacket(_ bytes: Data, to fingerprint: DeviceFingerprint,
                        sendKind: ProfilePacket.SendKind,
                        receiveKind: ProfilePacket.ReceiveKind) async throws -> Data?
     {
+        guard preferredDevice == fingerprint else { throw HIDError.deviceNotFound }
         try ensureTransport()
         guard let transport else { throw HIDError.deviceNotFound }
 
@@ -396,24 +387,19 @@ actor HyperXDeviceService: DeviceService {
     // MARK: - Internals
 
     private func ensureTransport() throws {
-        switch HIDPermission.currentState() {
-        case .denied:
-            self.transport?.close()
-            self.transport = nil
-            self.activeProfile = nil
-            self.activeFingerprint = nil
-            throw HIDError.notPermitted
-        case .unknown, .granted:
-            break
+        // Finish all report fallbacks on the current handle before rediscovery.
+        if consecutiveFailures >= consecutiveFailureThreshold {
+            logger.warning(.hid, "Repeated transport failures; reopening the receiver")
+            resetTransport()
+        }
+        if let activeFingerprint, transport != nil {
+            try checkAccess(for: activeFingerprint)
+            return
         }
 
-        if transport != nil { return }
-
         var candidates = HIDDeviceFinder.discoverCandidates(logger: logger)
-        if let vid = preferredVendorID, let pid = preferredProductID {
-            let filtered = candidates.filter {
-                $0.fingerprint.vendorID == vid && $0.fingerprint.productID == pid
-            }
+        if let preferredDevice {
+            let filtered = candidates.filter { preferredDevice.matchesAttachment($0.fingerprint) }
             // A command for a disconnected selection must not reach another mouse.
             guard !filtered.isEmpty else { throw HIDError.deviceNotFound }
             candidates = filtered
@@ -424,6 +410,7 @@ actor HyperXDeviceService: DeviceService {
             throw HIDError.deviceNotFound
         }
 
+        try checkAccess(for: fp)
         let transport = HIDTransport(device: candidate.device, logger: logger)
         try transport.open()
         self.transport = transport
@@ -432,12 +419,20 @@ actor HyperXDeviceService: DeviceService {
         logger.info(.hid, "active profile=\(profile.identifier) capabilities=\(profile.capabilities.labels.joined(separator: ","))")
     }
 
+    private func checkAccess(for fingerprint: DeviceFingerprint) throws {
+        guard fingerprint.isVendorControlInterface || HIDPermission.currentState() == .granted else {
+            resetTransport()
+            throw HIDError.notPermitted
+        }
+    }
+
     private func executeRequest<T>(_ packets: [ProfilePacket],
                                    transport: HIDTransport,
                                    parse: (Data) throws -> T) throws -> T
     {
         var lastError: Error?
-        for packet in packets {
+        let requests = activeFingerprint?.probeRequests(packets) ?? packets
+        for packet in requests {
             do {
                 guard let response = try transmit(packet, transport: transport) else {
                     throw HIDError.unexpectedResponse
@@ -477,23 +472,6 @@ actor HyperXDeviceService: DeviceService {
         }
     }
 
-    /// Called by `transmit` on every send/receive failure. Drops the
-    /// transport once the threshold is reached so the next call rediscovers
-    /// the device — a robust catch-all for flaky / changed-port hardware
-    /// where the specific error code is not deterministic.
-    private func recordTransportFailure() {
-        consecutiveFailures += 1
-        if consecutiveFailures >= consecutiveFailureThreshold {
-            logger.warning(.hid,
-                "transport: \(consecutiveFailures) consecutive failures — dropping cached handle")
-            resetTransport()
-        }
-    }
-
-    private func recordTransportSuccess() {
-        consecutiveFailures = 0
-    }
-
     private func resetTransport() {
         transport?.close()
         transport = nil
@@ -518,68 +496,44 @@ actor HyperXDeviceService: DeviceService {
 
         var lastError: Error?
         for sendKind in sendKinds {
-            // For receive .input we await an interrupt input report.
-            do {
-                let response: Data?
-                if packet.receive == .input {
-                    response = try transport.sendAndAwaitInputReport(
-                        packet.bytes, as: sendKind,
-                        expectingCommand: command, timeoutMs: 1500
-                    )
-                } else if packet.receive == .feature {
-                    try transport.send(packet.bytes, as: sendKind, verbose: verbose)
-                    response = try transport.pollReport(
-                        expectingCommand: command, as: .feature,
-                        attempts: 5, timeoutMs: 1500
-                    )
-                } else {
-                    try transport.send(packet.bytes, as: sendKind, verbose: verbose)
-                    response = nil
-                }
-                recordTransportSuccess()
-                return response
-            } catch HIDError.notPermitted {
-                resetTransport()
-                throw HIDError.notPermitted
-            } catch let HIDError.writeFailed(code) where Self.isFatalIOReturn(code) {
-                resetTransport()
-                throw HIDError.deviceNotFound
-            } catch let HIDError.readFailed(code) where Self.isFatalIOReturn(code) {
-                resetTransport()
-                throw HIDError.deviceNotFound
-            } catch let HIDError.openFailed(code) where Self.isFatalIOReturn(code) {
-                resetTransport()
-                throw HIDError.deviceNotFound
-            } catch {
-                lastError = error
-                recordTransportFailure()
-                if packet.retryWithReportID, sendKind == .feature, transport === self.transport {
-                    do {
-                        let prefixed = PacketUtils.withLeadingReportID(packet.bytes)
-                        try transport.send(prefixed, as: .feature, verbose: verbose)
-                        if packet.receive == .feature {
-                            let response = try transport.pollReport(
-                                expectingCommand: command, as: .feature,
-                                attempts: 5, timeoutMs: 1500
-                            )
-                            recordTransportSuccess()
-                            return response
-                        }
-                        recordTransportSuccess()
-                        return nil
-                    } catch {
-                        lastError = error
+            let reports = sendKind == .feature && packet.retryWithReportID
+                ? [packet.bytes, PacketUtils.withLeadingReportID(packet.bytes)]
+                : [packet.bytes]
+            for report in reports {
+                do {
+                    let response: Data?
+                    switch packet.receive {
+                    case .input:
+                        response = try transport.sendAndAwaitInputReport(
+                            report, as: sendKind, expectingCommand: command, timeoutMs: 1500)
+                    case .feature:
+                        try transport.send(report, as: sendKind, verbose: verbose)
+                        response = try transport.pollReport(
+                            expectingCommand: command, as: .feature, attempts: 5, timeoutMs: 1500)
+                    case .none:
+                        try transport.send(report, as: sendKind, verbose: verbose)
+                        response = nil
                     }
-                }
-                // If the heuristic threshold tripped during this attempt,
-                // resetTransport() was called and our local `transport`
-                // ref is stale — bail out instead of re-attempting on a
-                // dead handle.
-                if self.transport == nil {
-                    throw HIDError.deviceNotFound
+                    consecutiveFailures = 0
+                    return response
+                } catch HIDError.notPermitted {
+                    resetTransport()
+                    throw HIDError.notPermitted
+                } catch let error as HIDError {
+                    switch error {
+                    case .writeFailed(let code), .readFailed(let code), .openFailed(let code):
+                        if Self.isFatalIOReturn(code) {
+                            resetTransport()
+                            throw HIDError.deviceNotFound
+                        }
+                    default:
+                        break
+                    }
+                    lastError = error
                 }
             }
         }
+        consecutiveFailures += 1
         throw lastError ?? HIDError.readTimeout
     }
 
@@ -629,7 +583,7 @@ struct ActiveProfileSnapshot: Equatable {
 /// Diagnostics-friendly view of a discovered candidate.
 struct DiagnosticsCandidate: Identifiable {
     var id: String {
-        "\(fingerprint.vendorID)-\(fingerprint.productID)-\(fingerprint.usagePage)-\(fingerprint.usage)"
+        fingerprint.attachmentKey
     }
     let fingerprint: DeviceFingerprint
     let summary: String

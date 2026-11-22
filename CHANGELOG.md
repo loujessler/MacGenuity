@@ -4,6 +4,17 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] — 2026-11-22
+
+- Pulsefire Haste Wireless uses the receiver's vendor-defined control interface. A denied Input Monitoring grant no longer blocks a receiver that macOS allows the app to open. Device discovery observes attachments without opening every mouse and keyboard interface.
+- MacGenuity checks the connected device at startup and on reconnection. It asks for Input Monitoring when a protected interface requires it. When macOS has already recorded a denial, the app shows its own recovery window with System Settings and relaunch actions. SoloCast audio and notification permissions remain independent.
+- Relaunch now waits for the previous process to exit before reopening the same app. Reset Access & Relaunch resets only this app’s Input Monitoring entry, proceeds only if the reset succeeds, and reports failures.
+- Identical USB receivers can be selected independently. Reconnecting a receiver restores its saved settings, and connecting a second one leaves the active mouse selected.
+- Applying DPI or button changes preserves pending lighting edits. Button remapping sends only edited assignments, and the DPI editor keeps at least one level enabled.
+- Battery history and low-battery alerts are tracked per receiver. The graph uses the time of each reading, and the menu distinguishes an unavailable reading from an empty battery.
+- The colour picker validates the entire hex value. Device controls have clearer accessibility labels, Diagnostics shows the result of each command, and QuadCast 2 S lighting controls wait for an unambiguous microphone connection.
+- Public builds remain ad-hoc signed. For devices that actually need Input Monitoring, macOS may require a new grant after an update. Enable the installed copy in System Settings and relaunch.
+
 ## [0.4.1] — 2026-11-22
 
 - Settings opens on Devices and shows the connected mouse's controls. The technical Profiles tab and the driver badge in the menu bar have been removed. DPI levels and saved lighting presets remain available.

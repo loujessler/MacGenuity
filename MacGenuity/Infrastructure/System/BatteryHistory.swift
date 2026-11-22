@@ -28,24 +28,33 @@ final class BatteryHistory: ObservableObject {
     @Published private(set) var samples: [BatterySample] = []
 
     private let defaults: UserDefaults
-    private let key = "batteryHistory.v1"
-    private let maxSamples = 24 * 60 / 5     // ~24h at one sample / 5 min, conservative
+    private var key: String?
+    private let maxSamples = 10 * 60 * 2
+    static let timeWindow: TimeInterval = 10 * 60 * 60
     private let logger: LoggerType
 
     init(defaults: UserDefaults = .standard, logger: LoggerType = FileLogger.shared) {
         self.defaults = defaults
         self.logger = logger
+    }
+
+    func selectDevice(_ fingerprint: DeviceFingerprint?) {
+        let newKey = fingerprint.map { "batteryHistory.v2." + $0.stableKey }
+        guard newKey != key else { return }
+        key = newKey
+        samples = []
         load()
     }
 
     func record(percent: Int, isCharging: Bool, at date: Date = Date()) {
+        guard key != nil else { return }
         // De-duplicate: skip recording if last sample is identical and < 60s old.
         if let last = samples.last,
            last.percent == percent,
            last.isCharging == isCharging,
-           date.timeIntervalSince(last.date) < 60 { return }
+           (0..<60).contains(date.timeIntervalSince(last.date)) { return }
 
-        var copy = samples
+        var copy = samples.filter { (0...Self.timeWindow).contains(date.timeIntervalSince($0.date)) }
         copy.append(BatterySample(date: date, percent: percent, isCharging: isCharging))
         if copy.count > maxSamples { copy.removeFirst(copy.count - maxSamples) }
         samples = copy
@@ -70,7 +79,7 @@ final class BatteryHistory: ObservableObject {
     }
 
     private func load() {
-        guard let data = defaults.data(forKey: key) else { return }
+        guard let key, let data = defaults.data(forKey: key) else { return }
         do {
             samples = try JSONDecoder().decode([BatterySample].self, from: data)
         } catch {
@@ -79,6 +88,7 @@ final class BatteryHistory: ObservableObject {
     }
 
     private func persist() {
+        guard let key else { return }
         do {
             let data = try JSONEncoder().encode(samples)
             defaults.set(data, forKey: key)

@@ -42,7 +42,7 @@ enum RegressionTests {
         precondition(QuadCastProfile().match(soloCast) > 0)
         let haste = DeviceFingerprint(vendorID: 0x03F0, productID: 0x028E,
             product: "HyperX Pulsefire Haste Wireless", usagePage: 0xFF13, usage: 1,
-            maxInput: 64, maxOutput: 64, maxFeature: 64)
+            maxInput: 64, maxOutput: 64, maxFeature: 64, registryEntryID: 1)
         precondition(profile.match(haste) > DefaultHyperXProfile().match(haste),
                      "The specific Haste profile must win over the generic driver")
         let registry = ProfileRegistry.shared
@@ -57,6 +57,22 @@ enum RegressionTests {
         let interfaces = [secondInterface, keyboardInterface, haste]
         precondition(registry.preferredInterface(in: interfaces) == registry.preferredInterface(in: interfaces.reversed()),
                      "Discovery order must not change the representative interface")
+        var firstReceiver = haste
+        firstReceiver.locationID = 100
+        var secondReceiver = haste
+        secondReceiver.locationID = 200
+        secondReceiver.registryEntryID = 2
+        var inputInterface = keyboardInterface
+        inputInterface.locationID = firstReceiver.locationID
+        let receivers = [inputInterface, secondReceiver, firstReceiver]
+        precondition(registry.representativeDevices(in: receivers) == [firstReceiver, secondReceiver])
+        precondition(!firstReceiver.matchesAttachment(secondReceiver))
+        precondition(ConfigurableDevice.hid(unrelated).category == .other)
+        precondition(ConfigurableDevice.hid(firstReceiver).id != ConfigurableDevice.hid(secondReceiver).id)
+        let interruptOnly = DeviceFingerprint(vendorID: haste.vendorID, productID: haste.productID,
+            product: haste.product, usagePage: 0xFF00, usage: 1, maxInput: 64, maxOutput: 64, maxFeature: 0)
+        precondition(interruptOnly.probeRequests(profile.batteryRequests()).map(\.send) == [.output])
+        precondition(haste.probeRequests(profile.batteryRequests()).map(\.send) == [.output, .feature])
         let disabled = levels.map { DPILevel(index: $0.index, dpi: $0.dpi,
                                              color: $0.color, enabled: false) }
         let safe = DeviceDPIState(levels: disabled, activeProfile: 5).normalized()
@@ -67,6 +83,15 @@ enum RegressionTests {
         precondition(corrupt.levels[1].color == RGBColor(red: 0, green: 255, blue: 0))
         precondition(Data.parseHex("+1") == nil)
         precondition(Data.parseHex("0xDE, AD BE EF") == Data([0xDE, 0xAD, 0xBE, 0xEF]))
+        precondition(Data.parseHex("deadBEEF") == Data([0xDE, 0xAD, 0xBE, 0xEF]))
+        for invalid in ["D0xE", "D E", "DE 0x", "0x+1"] {
+            precondition(Data.parseHex(invalid) == nil)
+        }
+        precondition(RGBColor.parseHex("#aBc")?.hexString == "AABBCC")
+        precondition(RGBColor.parseHex(" 12aBcD ")?.hexString == "12ABCD")
+        for invalid in ["12GG34", "0x1234", "+12345", "#12", "１２３"] {
+            precondition(RGBColor.parseHex(invalid) == nil, "Reject the entire invalid colour")
+        }
         print("Mouse protocol and profile regression tests passed")
         try await ViewModelTests.run(fingerprint: haste, soloCast: soloCast, unrelated: unrelated)
     }

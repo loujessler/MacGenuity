@@ -39,8 +39,7 @@ protocol DeviceService: AnyObject {
     /// reapplying every other setting.
     func selectDPIProfile(_ profile: Int) async throws
 
-    /// Lists every plausible HyperX device currently attached, deduped
-    /// by VID:PID (one entry per physical mouse/headset).
+    /// Returns a representative interface for each attached receiver.
     func availableDevices() async -> [DeviceFingerprint]
 
     /// Forces the service to use the device with the given fingerprint.
@@ -64,11 +63,11 @@ protocol DeviceService: AnyObject {
     func snapshotProfile() async -> ActiveProfileSnapshot?
 
     /// Fire-and-discover for the diagnostics window. Doesn't open the device.
-    func diagnosticsCandidates() -> [DiagnosticsCandidate]
+    func diagnosticsCandidates() async -> [DiagnosticsCandidate]
 
     /// Send an arbitrary packet for diagnostics. The first byte is treated
     /// as the command for response matching.
-    func sendRawPacket(_ bytes: Data,
+    func sendRawPacket(_ bytes: Data, to fingerprint: DeviceFingerprint,
                        sendKind: ProfilePacket.SendKind,
                        receiveKind: ProfilePacket.ReceiveKind) async throws -> Data?
 

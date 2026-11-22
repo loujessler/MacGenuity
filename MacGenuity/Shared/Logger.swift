@@ -195,22 +195,19 @@ extension Data {
     /// Parse a hex string of any common shape into Data:
     /// "DE AD BE EF", "DEADBEEF", "0xDE 0xAD". Returns nil on garbage.
     static func parseHex(_ string: String) -> Data? {
-        let cleaned = string
-            .replacingOccurrences(of: "0x", with: "", options: .caseInsensitive)
-            .components(separatedBy: .whitespacesAndNewlines).joined()
-            .components(separatedBy: ",").joined()
-        guard cleaned.count.isMultiple(of: 2), !cleaned.isEmpty else { return nil }
-        guard cleaned.utf8.allSatisfy({ (48...57).contains($0)
-            || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
-
+        let tokens = string.split { $0.isWhitespace || $0 == "," }
+        guard !tokens.isEmpty else { return nil }
         var result = Data()
-        result.reserveCapacity(cleaned.count / 2)
-        var index = cleaned.startIndex
-        while index < cleaned.endIndex {
-            let next = cleaned.index(index, offsetBy: 2)
-            guard let byte = UInt8(cleaned[index..<next], radix: 16) else { return nil }
-            result.append(byte)
-            index = next
+        for token in tokens {
+            var digits = token
+            if digits.hasPrefix("0x") || digits.hasPrefix("0X") { digits = digits.dropFirst(2) }
+            guard !digits.isEmpty, digits.count.isMultiple(of: 2),
+                  digits.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+            while !digits.isEmpty {
+                guard let byte = UInt8(digits.prefix(2), radix: 16) else { return nil }
+                result.append(byte)
+                digits = digits.dropFirst(2)
+            }
         }
         return result
     }

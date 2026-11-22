@@ -44,6 +44,17 @@ final class ProfileRegistry {
         return !profile.capabilities.isDisjoint(with: [.battery, .lighting, .dpiProfiles, .buttons])
     }
 
+    func representativeDevices(in devices: [DeviceFingerprint]) -> [DeviceFingerprint] {
+        let groups = Dictionary(grouping: devices) { fp in
+            // All interfaces on the same USB receiver share its location.
+            let attachment = fp.locationID.map(String.init) ?? fp.serialNumber ?? ""
+            return "\(fp.vendorID):\(fp.productID):\(attachment)"
+        }
+        return groups.values.compactMap { preferredInterface(in: $0) }.sorted {
+            ($0.product, $0.stableKey, $0.registryEntryID ?? 0) < ($1.product, $1.stableKey, $1.registryEntryID ?? 0)
+        }
+    }
+
     /// Use the same ranking for the sidebar and the transport, even when
     /// IOKit returns equally scored interfaces in a different order.
     func preferredInterface(in devices: [DeviceFingerprint]) -> DeviceFingerprint? {
@@ -52,7 +63,10 @@ final class ProfileRegistry {
             return (fingerprint: fp, score: score ?? -1)
         }
         return ranked.max { lhs, rhs in
-            if lhs.score == rhs.score { return lhs.fingerprint.stableKey > rhs.fingerprint.stableKey }
+            if lhs.score == rhs.score {
+                return (lhs.fingerprint.stableKey, lhs.fingerprint.registryEntryID ?? 0)
+                     > (rhs.fingerprint.stableKey, rhs.fingerprint.registryEntryID ?? 0)
+            }
             return lhs.score < rhs.score
         }?.fingerprint
     }
