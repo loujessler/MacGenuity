@@ -4,6 +4,13 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-11-22
+
+- Check for a new stable version from the menu bar or Settings → General. Sparkle downloads the update from GitHub Releases and handles installation and relaunch.
+- Automatic checking and installation are enabled by default. Both preferences can be changed in General. Automatic updates normally install on quit.
+- The app verifies the Ed25519 signature of the update feed and downloaded disk image before extraction. Stable tag builds publish the signed feed and universal DMG together after tests pass on Intel and Apple Silicon.
+- To enable updating from 0.3.2 or earlier, quit MacGenuity and install this DMG in Applications once. The macOS application signature remains ad-hoc and Input Monitoring may need approval after an upgrade.
+
 ## [0.3.2] — 2026-10-13
 
 ### Changed

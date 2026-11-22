@@ -13,6 +13,8 @@ struct MacGenuityApp: App {
     @StateObject private var history: BatteryHistory
     @StateObject private var deviceStates: DeviceStateStore
 
+    @StateObject private var updater: AppUpdater
+
     init() {
         // Two copies would send competing lighting commands to the same mouse.
         let current = NSRunningApplication.current
@@ -41,6 +43,7 @@ struct MacGenuityApp: App {
             presetStore: presetStore,
             deviceStates: deviceStates
         )
+        _updater = StateObject(wrappedValue: AppUpdater())
         viewModel.attach(settings: settings)
 
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -67,6 +70,7 @@ struct MacGenuityApp: App {
                 presetStore: presetStore,
                 history: history
             )
+            .environmentObject(updater)
         } label: {
             MenuBarLabel(viewModel: viewModel, settings: settings)
                 .onChange(of: settings.refreshInterval) { interval in
@@ -89,6 +93,7 @@ struct MacGenuityApp: App {
                 viewModel: viewModel,
                 presetStore: presetStore
             )
+            .environmentObject(updater)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 840, height: 640)

@@ -17,7 +17,7 @@ APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 # Honor an explicit SDKROOT. Some CLT releases omit SwiftUIMacros while
 # shipping an SDK that requires it; select the installed macOS 26 SDK then.
 SDK_PATH="${SDKROOT:-$(xcrun --show-sdk-path)}"
-DEVELOPER_DIR_PATH="$(xcode-select -p)"
+DEVELOPER_DIR_PATH="$(dirname "$(dirname "${SDK_PATH}")")"
 if [[ -z "${SDKROOT:-}" && "${DEVELOPER_DIR_PATH}" == */CommandLineTools &&
       ! -f "${DEVELOPER_DIR_PATH}/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" &&
       -d "${DEVELOPER_DIR_PATH}/SDKs/MacOSX26.sdk" ]]; then
@@ -134,6 +134,13 @@ if [[ "${#SOURCES[@]}" -eq 0 ]]; then
     exit 1
 fi
 
+SPARKLE_DIR="${BUILD_DIR}/sparkle"
+bash "${ROOT}/tools/fetch-sparkle.sh" "${SPARKLE_DIR}"
+FRAMEWORKS="${APP_BUNDLE}/Contents/Frameworks"
+mkdir -p "${FRAMEWORKS}"
+ditto "${SPARKLE_DIR}/Sparkle.framework" "${FRAMEWORKS}/Sparkle.framework"
+cp "${SPARKLE_DIR}/LICENSE" "${APP_BUNDLE}/Contents/Resources/Sparkle-LICENSE.txt"
+
 FINAL_BINARY="${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 SWIFTC_COMMON_FLAGS=(
     -sdk "${SDK_PATH}"
@@ -141,6 +148,9 @@ SWIFTC_COMMON_FLAGS=(
     -framework IOKit
     -framework CoreAudio
     -framework ServiceManagement
+    -F "${FRAMEWORKS}"
+    -framework Sparkle
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks
     -framework SwiftUI
     -framework AppKit
     -O
@@ -262,7 +272,7 @@ else
     echo "Signing ad-hoc (cdhash will change on every rebuild — see README for"
     echo "how to create a stable self-signed identity)."
     # Ad-hoc + no hardened runtime → debugger can always attach.
-    codesign --force --deep --sign - "${APP_BUNDLE}"
+    codesign --force --sign - "${APP_BUNDLE}"
 fi
 
 echo ""

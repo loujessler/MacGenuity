@@ -17,6 +17,7 @@ struct MenuContent: View {
     @ObservedObject var presetStore: PresetStore
     @ObservedObject var history: BatteryHistory
 
+    @EnvironmentObject private var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -293,6 +294,10 @@ struct MenuContent: View {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "settings")
             }
+            menuButton(label: "Check for Updates…", systemImage: "arrow.down.circle", shortcut: "U") {
+                updater.check()
+            }
+            .disabled(!updater.canCheck)
             menuButton(label: "Diagnostics…", systemImage: "stethoscope", shortcut: "D") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "diagnostics")

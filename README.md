@@ -13,7 +13,7 @@
 
 A lightweight macOS menu-bar application for monitoring and controlling HyperX peripherals — wireless mice, USB microphones, and headset families.
 
-Built with pure Swift and SwiftUI. No third-party dependencies. Distributed as a single self-contained `.app`.
+Built with Swift and SwiftUI. Software updates use Sparkle. Distributed as a single self-contained `.app`.
 
 ---
 
@@ -21,7 +21,7 @@ Built with pure Swift and SwiftUI. No third-party dependencies. Distributed as a
 
 MacGenuity surfaces real-time device state and lets you change lighting, DPI, button mappings and microphone state from the macOS menu bar — without HP's NGenuity software or any background daemons.
 
-The project is intentionally a low-level, dependency-free macOS utility. It talks to the mouse through IOKit HID directly, and to the audio subsystem through CoreAudio.
+The project is intentionally a native macOS utility. It talks to the mouse through IOKit HID directly, and to the audio subsystem through CoreAudio.
 
 ---
 
@@ -216,6 +216,12 @@ The build script:
 
 Writes the result to `build/MacGenuity.app`.
 
+### In-app updates
+
+Install version 0.4.0 or later in Applications to receive signed updates from stable GitHub Releases. Choose **Check for Updates…** in the menu bar to check immediately. Settings → General controls automatic checks and installation. Both default to on. Sparkle checks daily, downloads updates in the background and normally installs them when the app quits. Versions through 0.3.2 need one manual DMG upgrade.
+
+For maintainers, increment both version fields in Info.plist, add the version to CHANGELOG.md and push the matching stable tag (for example, `v0.4.0`). After both CI jobs pass, GitHub Actions signs the universal DMG and the Sparkle feed and publishes them together. The dedicated Ed25519 key is in the maintainer's Keychain under the Sparkle account `io.github.loujessler.macgenuity.sparkle` and in the repository Actions secret `SPARKLE_PRIVATE_KEY`. Keep a secure backup of this key for future releases.
+
 ### Distribution build (DMG for GitHub)
 
 ```bash
@@ -403,7 +409,7 @@ kept for macOS and is not displayed in the UI or release titles.
 
 ## ❤️ Support
 
-MacGenuity is an independent open-source project built without third-party dependencies.
+MacGenuity is an independent open-source project for macOS.
 
 If it replaces proprietary software in your setup or saves you time, consider supporting development:
 

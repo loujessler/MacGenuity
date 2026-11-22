@@ -42,6 +42,7 @@ struct SettingsScene: View {
 // MARK: - General
 
 private struct GeneralPane: View {
+    @EnvironmentObject private var updater: AppUpdater
     @ObservedObject var settings: AppSettings
 
     var body: some View {
@@ -67,6 +68,18 @@ private struct GeneralPane: View {
                         Text("\(v)%").tag(v)
                     }
                 }
+            }
+
+            Section("Software updates") {
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { updater.checksAutomatically }, set: updater.setChecksAutomatically
+                ))
+                Toggle("Automatically download and install", isOn: Binding(
+                    get: { updater.installsAutomatically }, set: updater.setInstallsAutomatically
+                ))
+                .disabled(!updater.checksAutomatically)
+                Button("Check for Updates…", action: updater.check)
+                    .disabled(!updater.canCheck)
             }
 
             if let error = settings.launchAtLoginError {
