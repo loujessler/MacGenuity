@@ -4,7 +4,12 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.2] — 2026-11-23
+## [1.0.3] — 2026-11-23
+
+- Removed the onboard keyboard macros that could pause pointer movement on the original Pulsefire Haste Wireless. Its native rear and front buttons send Mouse4 and Mouse5.
+- Profiles from 1.0.1 and 1.0.2 still open. To replace a legacy shortcut already stored on a mouse, choose **Mouse → Back** or **Mouse → Forward** for that side button in **Settings → Devices → Buttons** and click **Apply**.
+
+## [1.0.2] — 2026-11-23 (local build)
 
 - The original Pulsefire Haste Wireless can store Back (⌘[) and Forward (⌘]) on its side buttons for use across macOS apps. Each press sends a single keyboard chord followed by its release. Select the shortcuts in Settings → Devices → Buttons, or choose Mouse → Back and Forward to restore Mouse4 and Mouse5.
 

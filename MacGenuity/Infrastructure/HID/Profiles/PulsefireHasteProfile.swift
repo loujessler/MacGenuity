@@ -201,17 +201,6 @@ final class PulsefireHasteProfile: DeviceProfile {
         case .sideForward: slot = 4
         default: slot = UInt8(assignment.button.rawValue)
         }
-        if case .macNavigation(let shortcut) = assignment.action {
-            guard assignment.button.isSideButton else { return [] }
-            // Each D6 event is a complete keyboard report. Send the chord and its
-            // release together in one chunk, with a nonzero delay on both events.
-            let press: [UInt8] = [0x1A, 0x08, shortcut.rawValue, 0, 0, 0, 0, 0, 8, 0]
-            let release: [UInt8] = [0x1A, 0, 0, 0, 0, 0, 0, 0, 1, 0]
-            return [Self.write([0xD4, slot, 4, 2, slot, 0], "assign onboard macro"),
-                    Self.write([0xD6, slot, 0, 2] + press + release, "navigation keystrokes"),
-                    Self.write([0xD5, slot, 0, 5, 2, 0, 0, 0, 0], "play macro once")]
-        }
-
         guard var binding = assignment.action.simpleBinding else { return [] }
         switch assignment.action {
         case .mouseButton(.back): binding.code = 4

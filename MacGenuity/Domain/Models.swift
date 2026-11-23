@@ -383,8 +383,6 @@ enum PhysicalButton: Int, CaseIterable, Identifiable, Codable {
     static let remappable: [PhysicalButton] = [
         .middle, .sideForward, .sideBack, .dpiToggle
     ]
-
-    var isSideButton: Bool { self == .sideBack || self == .sideForward }
 }
 
 enum ButtonAction: Codable, Equatable, Hashable {
@@ -394,16 +392,17 @@ enum ButtonAction: Codable, Equatable, Hashable {
     case dpiToggle
     /// Non-standard HyperX media function table (0x03 type byte).
     case media(MediaFunctionCode)
+    /// Retained so profiles from 1.0.1 and 1.0.2 can display and replace an old assignment.
     case macNavigation(NavigationShortcut)
 
-    enum NavigationShortcut: UInt8, CaseIterable, Codable {
+    enum NavigationShortcut: UInt8, Codable {
         // USB HID keyboard usages for the bracket keys.
         case back = 0x2F, forward = 0x30
 
         var title: String {
             switch self {
-            case .back:    return "Back (⌘[)"
-            case .forward: return "Forward (⌘])"
+            case .back:    return "Legacy shortcut (⌘[)"
+            case .forward: return "Legacy shortcut (⌘])"
             }
         }
     }
