@@ -321,10 +321,13 @@ actor HyperXDeviceService: DeviceService {
             throw HIDError.unsupportedOperation("Button assignments")
         }
 
-        for assignment in assignments {
-            for packet in active.buttonAssignmentPackets(assignment) {
-                try send(packet, transport: transport)
-            }
+        let packets = try assignments.flatMap { assignment -> [ProfilePacket] in
+            let packets = active.buttonAssignmentPackets(assignment)
+            guard !packets.isEmpty else { throw HIDError.unsupportedOperation(assignment.action.title) }
+            return packets
+        }
+        for packet in packets {
+            try send(packet, transport: transport)
         }
         if let commit = active.commitPacket(for: .buttons) {
             try send(commit, transport: transport)

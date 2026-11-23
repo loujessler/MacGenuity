@@ -201,13 +201,27 @@ final class PulsefireHasteProfile: DeviceProfile {
         case .sideForward: slot = 4
         default: slot = UInt8(assignment.button.rawValue)
         }
-        let code: UInt8
-        switch assignment.action {
-        case .mouseButton(.back): code = 4
-        case .mouseButton(.forward): code = 5
-        default: code = assignment.action.code
+        if case .macNavigation(let shortcut) = assignment.action {
+            guard assignment.button.isSideButton else { return [] }
+            // Each D6 keyboard event is a complete HID state with a little-endian delay.
+            // Press Command before the bracket and release it after the bracket is up.
+            func keyboard(_ modifiers: UInt8, _ key: UInt8, delay: UInt8) -> [UInt8] {
+                [0x1A, modifiers, key, 0, 0, 0, 0, 0, delay, 0]
+            }
+            let events = keyboard(0x08, 0, delay: 20) + keyboard(0x08, shortcut.rawValue, delay: 20)
+                + keyboard(0x08, 0, delay: 20) + keyboard(0, 0, delay: 0)
+            return [Self.write([0xD4, slot, 4, 2, slot, 0], "assign onboard macro"),
+                    Self.write([0xD6, slot, 0, 4] + events, "navigation keystrokes"),
+                    Self.write([0xD5, slot, 0, 5, 4, 0, 0, 0, 0], "play macro once")]
         }
-        return [Self.write([0xD4, slot, assignment.action.assignmentTypeByte, 2, code, 0], "button assignment")]
+
+        guard var binding = assignment.action.simpleBinding else { return [] }
+        switch assignment.action {
+        case .mouseButton(.back): binding.code = 4
+        case .mouseButton(.forward): binding.code = 5
+        default: break
+        }
+        return [Self.write([0xD4, slot, binding.type, 2, binding.code, 0], "button assignment")]
     }
 
     func commitPacket(for setting: MouseSetting) -> ProfilePacket? {

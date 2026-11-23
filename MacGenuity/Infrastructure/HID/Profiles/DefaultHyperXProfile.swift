@@ -269,12 +269,13 @@ final class DefaultHyperXProfile: DeviceProfile {
     /// The packet must be followed by `commitPacket()` (`DE 03 00`) for
     /// the device to apply it on the next event — same as DPI batches.
     func buttonAssignmentPackets(_ assignment: ButtonAssignment) -> [ProfilePacket] {
+        guard let binding = assignment.action.simpleBinding else { return [] }
         var packet = Data(count: PacketUtils.packetSize)
         packet[0] = 0xD4
         packet[1] = UInt8(assignment.button.rawValue)
-        packet[2] = assignment.action.assignmentTypeByte
+        packet[2] = binding.type
         packet[3] = 0x02
-        packet[4] = assignment.action.code
+        packet[4] = binding.code
         packet[5] = 0x04
         return [
             ProfilePacket(bytes: packet,

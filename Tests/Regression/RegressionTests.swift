@@ -19,6 +19,7 @@ enum RegressionTests {
         precondition(fifth[0].bytes.prefix(6) == Data([0xD3, 2, 4, 2, 64, 0]))
         let side = ButtonAssignment(button: .sideBack, action: .mouseButton(.forward))
         precondition(profile.buttonAssignmentPackets(side)[0].bytes.prefix(6) == Data([0xD4, 3, 1, 2, 5, 0]))
+        try testNavigationShortcuts(profile)
         let dpiCommit = profile.commitPacket(for: .dpi)
         precondition(dpiCommit?.bytes.prefix(2) == Data([0xDE, 3]))
         precondition(profile.commitPacket(for: .buttons)?.bytes.prefix(2) == Data([0xDE, 0xFF]))
@@ -147,6 +148,39 @@ enum RegressionTests {
         }
         print("Mouse protocol and profile regression tests passed")
         try await ViewModelTests.run(fingerprint: haste, soloCast: soloCast, unrelated: unrelated)
+    }
+
+    private static func testNavigationShortcuts(_ profile: DeviceProfile) throws {
+        let cases: [(PhysicalButton, ButtonAction.NavigationShortcut, UInt8, UInt8)] = [
+            (.sideBack, .back, 3, 0x2F), (.sideForward, .forward, 4, 0x30),
+            (.sideBack, .forward, 3, 0x30), (.sideForward, .back, 4, 0x2F)
+        ]
+        for (button, shortcut, slot, key) in cases {
+            let entry = ButtonAssignment(button: button, action: .macNavigation(shortcut))
+            let packets = profile.buttonAssignmentPackets(entry)
+            precondition(packets.map { $0.bytes[0] } == [0xD4, 0xD6, 0xD5])
+            precondition(packets.allSatisfy {
+                $0.bytes.count == 64 && $0.send == .output && $0.receive == .input
+                    && $0.responsePrefix == Array($0.bytes.prefix(3)) + [2, 0xEC, 0xAC]
+            })
+            precondition(packets[0].bytes.starts(with: [0xD4, slot, 4, 2, slot, 0]))
+            let events = packets[1].bytes
+            precondition(events.starts(with: [0xD6, slot, 0, 4]))
+            precondition(events[4..<14].elementsEqual([0x1A, 8, 0, 0, 0, 0, 0, 0, 20, 0]))
+            precondition(events[14..<24].elementsEqual([0x1A, 8, key, 0, 0, 0, 0, 0, 20, 0]))
+            precondition(events[24..<34] == events[4..<14])
+            precondition(events[34] == 0x1A && events[35...].allSatisfy { $0 == 0 })
+            precondition(packets[2].bytes.starts(with: [0xD5, slot, 0, 5, 4, 0, 0, 0, 0]))
+            precondition(DefaultHyperXProfile().buttonAssignmentPackets(entry).isEmpty)
+            let saved = try JSONEncoder().encode(entry)
+            let decoded = try JSONDecoder().decode(ButtonAssignment.self, from: saved)
+            precondition(decoded == entry)
+            let restored = profile.buttonAssignmentPackets(.init(button: button, action: .factoryDefault(for: button)))
+            precondition(restored.count == 1 && restored[0].bytes.starts(with: [0xD4, slot, 1, 2, slot + 1, 0]))
+        }
+        for button in PhysicalButton.allCases where !button.isSideButton {
+            precondition(profile.buttonAssignmentPackets(.init(button: button, action: .macNavigation(.back))).isEmpty)
+        }
     }
 
     private static func testWheelReadback(_ wheel: (LEDEffect, Int, Int) -> [Data]) throws {

@@ -956,9 +956,15 @@ private struct ButtonsSection: View {
     @State private var editedButtons: Set<PhysicalButton> = []
     @State private var applying = false
 
+    private var supportsNavigationShortcuts: Bool {
+        viewModel.activeProfile?.fingerprint.isPulsefireHasteWireless == true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Assign actions to the wheel, side buttons and DPI button. Primary clicks stay unchanged.")
+            Text(supportsNavigationShortcuts
+                 ? "A macOS shortcut replaces the selected side button’s onboard macro and works in every app."
+                 : "Assign actions to the wheel, side buttons and DPI button. Primary clicks stay unchanged.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -990,6 +996,13 @@ private struct ButtonsSection: View {
                     Section("Mouse") {
                         ForEach(ButtonAction.MouseFunctionCode.allCases) { code in
                             Text(code.title).tag(ButtonAction.mouseButton(code))
+                        }
+                    }
+                    if button.isSideButton, supportsNavigationShortcuts {
+                        Section("macOS shortcuts") {
+                            ForEach(ButtonAction.NavigationShortcut.allCases, id: \.self) { shortcut in
+                                Text(shortcut.title).tag(ButtonAction.macNavigation(shortcut))
+                            }
                         }
                     }
                     Text("DPI cycle").tag(ButtonAction.dpiToggle)

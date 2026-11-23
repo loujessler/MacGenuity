@@ -383,18 +383,30 @@ enum PhysicalButton: Int, CaseIterable, Identifiable, Codable {
     static let remappable: [PhysicalButton] = [
         .middle, .sideForward, .sideBack, .dpiToggle
     ]
+
+    var isSideButton: Bool { self == .sideBack || self == .sideForward }
 }
 
-/// Concrete bound action. The `(type, code)` pair maps directly to bytes
-/// `[2]` and `[4]` of the `0xD4` packet — see `assignmentTypeByte` /
-/// `code` getters.
 enum ButtonAction: Codable, Equatable, Hashable {
-    /// USB HID Button Page (0x09): 1=Left, 2=Right, 3=Middle, 4=Forward, 5=Back
+    /// Legacy NGenuity2 codes. PF002 has its own Back/Forward order.
     case mouseButton(MouseFunctionCode)
     /// Hardware DPI cycling. `0x07` assignment type, code `0x08`.
     case dpiToggle
     /// Non-standard HyperX media function table (0x03 type byte).
     case media(MediaFunctionCode)
+    case macNavigation(NavigationShortcut)
+
+    enum NavigationShortcut: UInt8, CaseIterable, Codable {
+        // USB HID keyboard usages for the bracket keys.
+        case back = 0x2F, forward = 0x30
+
+        var title: String {
+            switch self {
+            case .back:    return "Back (⌘[)"
+            case .forward: return "Forward (⌘])"
+            }
+        }
+    }
 
     enum MouseFunctionCode: Int, CaseIterable, Identifiable, Codable {
         case left = 0x01, right = 0x02, middle = 0x03, forward = 0x04, back = 0x05
@@ -427,21 +439,13 @@ enum ButtonAction: Codable, Equatable, Hashable {
         }
     }
 
-    /// Byte `[2]` of the `0xD4` packet.
-    var assignmentTypeByte: UInt8 {
+    /// Type and code for actions that fit in a single D4 assignment.
+    var simpleBinding: (type: UInt8, code: UInt8)? {
         switch self {
-        case .mouseButton: return 0x01
-        case .media:       return 0x03
-        case .dpiToggle:   return 0x07
-        }
-    }
-
-    /// Byte `[4]` of the `0xD4` packet.
-    var code: UInt8 {
-        switch self {
-        case .mouseButton(let c): return UInt8(c.rawValue)
-        case .media(let c):       return UInt8(c.rawValue)
-        case .dpiToggle:          return 0x08
+        case .mouseButton(let c): return (0x01, UInt8(c.rawValue))
+        case .media(let c):       return (0x03, UInt8(c.rawValue))
+        case .dpiToggle:          return (0x07, 0x08)
+        case .macNavigation:      return nil
         }
     }
 
@@ -450,6 +454,7 @@ enum ButtonAction: Codable, Equatable, Hashable {
         case .mouseButton(let c): return c.title
         case .media(let c):       return "Media: \(c.title)"
         case .dpiToggle:          return "DPI cycle"
+        case .macNavigation(let shortcut): return shortcut.title
         }
     }
 
