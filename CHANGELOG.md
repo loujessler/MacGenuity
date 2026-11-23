@@ -4,9 +4,14 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] — 2026-11-23
+## [1.0.2] — 2026-11-23
+
+- The original Pulsefire Haste Wireless can store Back (⌘[) and Forward (⌘]) on its side buttons for use across macOS apps. Each press sends a single keyboard chord followed by its release. Select the shortcuts in Settings → Devices → Buttons, or choose Mouse → Back and Forward to restore Mouse4 and Mouse5.
+
+## [1.0.1] — 2026-11-23 (source tag)
 
 - Added onboard macOS Back (⌘[) and Forward (⌘]) shortcuts for the two side buttons of the original Pulsefire Haste Wireless. Choose them in Settings → Devices → Buttons for Safari history navigation. They work across applications with MacGenuity closed. The Mouse menu still offers the original Mouse4 and Mouse5 assignments for games.
+- The stable update was held after a report of a pause in pointer movement after pressing a side button.
 
 ## [1.0.0] — 2026-11-23
 

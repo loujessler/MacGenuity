@@ -203,16 +203,13 @@ final class PulsefireHasteProfile: DeviceProfile {
         }
         if case .macNavigation(let shortcut) = assignment.action {
             guard assignment.button.isSideButton else { return [] }
-            // Each D6 keyboard event is a complete HID state with a little-endian delay.
-            // Press Command before the bracket and release it after the bracket is up.
-            func keyboard(_ modifiers: UInt8, _ key: UInt8, delay: UInt8) -> [UInt8] {
-                [0x1A, modifiers, key, 0, 0, 0, 0, 0, delay, 0]
-            }
-            let events = keyboard(0x08, 0, delay: 20) + keyboard(0x08, shortcut.rawValue, delay: 20)
-                + keyboard(0x08, 0, delay: 20) + keyboard(0, 0, delay: 0)
+            // Each D6 event is a complete keyboard report. Send the chord and its
+            // release together in one chunk, with a nonzero delay on both events.
+            let press: [UInt8] = [0x1A, 0x08, shortcut.rawValue, 0, 0, 0, 0, 0, 8, 0]
+            let release: [UInt8] = [0x1A, 0, 0, 0, 0, 0, 0, 0, 1, 0]
             return [Self.write([0xD4, slot, 4, 2, slot, 0], "assign onboard macro"),
-                    Self.write([0xD6, slot, 0, 4] + events, "navigation keystrokes"),
-                    Self.write([0xD5, slot, 0, 5, 4, 0, 0, 0, 0], "play macro once")]
+                    Self.write([0xD6, slot, 0, 2] + press + release, "navigation keystrokes"),
+                    Self.write([0xD5, slot, 0, 5, 2, 0, 0, 0, 0], "play macro once")]
         }
 
         guard var binding = assignment.action.simpleBinding else { return [] }
