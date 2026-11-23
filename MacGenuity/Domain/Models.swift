@@ -14,6 +14,7 @@ struct MouseInfo: Equatable {
     let firmware: String
     let vendorID: Int
     let productID: Int
+    var pairedMouseFirmware: String?
 
     var displayName: String {
         name.isEmpty ? "HyperX mouse" : name
@@ -23,6 +24,27 @@ struct MouseInfo: Equatable {
 struct BatteryState: Equatable {
     let percent: Int
     let isCharging: Bool
+
+    var symbol: String {
+        if isCharging { return "battery.100.bolt" }
+        switch percent {
+        case 75...: return "battery.100"
+        case 50..<75: return "battery.75"
+        case 25..<50: return "battery.50"
+        case 10..<25: return "battery.25"
+        default: return "battery.0"
+        }
+    }
+}
+
+enum WheelColour: Equatable {
+    case off
+    case single(RGBColor)
+    case multicolour
+
+    init(_ colour: RGBColor) {
+        self = (colour.red == 0 && colour.green == 0 && colour.blue == 0) ? .off : .single(colour)
+    }
 }
 
 struct MicrophoneInfo: Identifiable, Equatable {
@@ -266,9 +288,7 @@ enum LEDTarget: Int, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// Raw `D2` effect byte. Values >0x00 came from prior reverse engineering
-/// and are *not* confirmed against the wire capture — assume experimental
-/// until proven on real hardware. UI marks them as such.
+/// Persisted effect IDs; only the generic profile uses these directly in D2.
 enum LEDEffect: Int, CaseIterable, Identifiable, Codable {
     /// Confirmed by NGENUITY pcap: `D2 00 00 08 RGB RGB 64 00`.
     case staticColor = 0x00
@@ -278,15 +298,16 @@ enum LEDEffect: Int, CaseIterable, Identifiable, Codable {
     case triggerFade = 0x30   // experimental
 
     var id: Int { rawValue }
-    var title: String {
+    var name: String {
         switch self {
         case .staticColor: return "Static"
-        case .spectrumAlt: return "Spectrum alt (experimental)"
-        case .spectrum:    return "Spectrum (experimental)"
-        case .breathing:   return "Breathing (experimental)"
-        case .triggerFade: return "Trigger fade (experimental)"
+        case .spectrumAlt: return "Spectrum alt"
+        case .spectrum:    return "Spectrum"
+        case .breathing:   return "Breathing"
+        case .triggerFade: return "Trigger fade"
         }
     }
+    var title: String { isVerified ? name : "\(name) (experimental)" }
     /// Whether this effect is confirmed against captured NGENUITY traffic.
     var isVerified: Bool { self == .staticColor }
 

@@ -126,52 +126,59 @@ actor HyperXDeviceService: DeviceService {
             throw HIDError.deviceNotFound
         }
 
-        var info: MouseInfo?
         var firstError: HIDError?
-
-        if profile.capabilities.contains(.info) {
-            // Profiles that advertise `.info` but don't actually have an
-            // info command to send (QuadCast family — info is exposed via
-            // USB descriptors / CoreAudio, not HID) return an empty list.
-            // Treat that as "no info available" instead of looping over
-            // zero packets and surfacing a misleading readTimeout error.
-            let requests = profile.infoRequests()
-            if !requests.isEmpty {
-                do {
-                    info = try executeRequest(requests,
-                                              transport: transport,
-                                              parse: profile.parseInfo)
-                } catch HIDError.notPermitted {
-                    throw HIDError.notPermitted
-                } catch HIDError.deviceNotFound {
-                    throw HIDError.deviceNotFound
-                } catch let error as HIDError {
-                    firstError = error
-                    logger.warning(.hid, "probe: info failed: \(error.localizedDescription)")
-                }
+        func readValue<T>(_ operation: () throws -> T) throws -> T? {
+            do {
+                return try operation()
+            } catch HIDError.notPermitted {
+                throw HIDError.notPermitted
+            } catch HIDError.deviceNotFound {
+                throw HIDError.deviceNotFound
+            } catch let error as HIDError {
+                firstError = firstError ?? error
+                logger.warning(.hid, "probe: \(error.localizedDescription)")
+                return nil
             }
         }
 
-        if profile.capabilities.contains(.battery) {
-            let requests = profile.batteryRequests()
-            if !requests.isEmpty {
-                do {
-                    let battery = try executeRequest(requests,
-                                                     transport: transport,
-                                                     parse: profile.parseBattery)
-                    return DeviceSnapshot(info: info, battery: battery, error: firstError)
-                } catch HIDError.notPermitted {
-                    throw HIDError.notPermitted
-                } catch HIDError.deviceNotFound {
-                    throw HIDError.deviceNotFound
-                } catch let error as HIDError {
-                    logger.warning(.hid, "probe: battery failed: \(error.localizedDescription)")
-                    return DeviceSnapshot(info: info, battery: nil, error: error)
+        let infoRequests = profile.infoRequests()
+        var info: MouseInfo?
+        if profile.capabilities.contains(.info), !infoRequests.isEmpty {
+            info = try readValue { try executeRequest(infoRequests, transport: transport, parse: profile.parseInfo) }
+        }
+        let haste = activeFingerprint?.isPulsefireHasteWireless == true
+        if haste, activeFingerprint?.productID == 0x028E {
+            let linked = try readValue {
+                try executeRequest([PulsefireHasteProfile.linkRequest], transport: transport, parse: PulsefireHasteProfile.isLinked)
+            }
+            guard linked == true else {
+                return DeviceSnapshot(info: info, battery: nil, error: linked == false ? .mouseAsleep : firstError)
+            }
+            if info != nil {
+                info?.pairedMouseFirmware = try readValue {
+                    try executeRequest([PulsefireHasteProfile.pairedMouseInfoRequest], transport: transport,
+                                       parse: profile.parseInfo).firmware
                 }
             }
         }
-
-        return DeviceSnapshot(info: info, battery: nil, error: firstError)
+        var battery: BatteryState?
+        let batteryRequests = profile.batteryRequests()
+        if profile.capabilities.contains(.battery), !batteryRequests.isEmpty {
+            battery = try readValue { try executeRequest(batteryRequests, transport: transport, parse: profile.parseBattery) }
+        }
+        var dpi: DeviceDPIState?
+        var wheelColour: WheelColour?
+        if haste, battery != nil {
+            dpi = try readValue {
+                try executeRequest([PulsefireHasteProfile.dpiRequest], transport: transport, parse: PulsefireHasteProfile.parseDPI)
+            }
+            wheelColour = try readValue {
+                try PulsefireHasteProfile.readWheelColour { packet in
+                    try executeRequest([packet], transport: transport, parse: { $0 })
+                }
+            }
+        }
+        return DeviceSnapshot(info: info, battery: battery, error: firstError, dpi: dpi, wheelColour: wheelColour)
     }
 
     // MARK: - Info accessors for UI
@@ -205,16 +212,14 @@ actor HyperXDeviceService: DeviceService {
         guard profile.capabilities.contains(.lighting) else {
             throw HIDError.unsupportedOperation("Lighting")
         }
-        if profile.capabilities.contains(.lighting) {
-            for packet in profile.lightingPackets(target: target, effect: effect,
-                                                  color: color,
-                                                  brightness: brightness, speed: speed) {
-                try send(packet, transport: transport)
-            }
+        for packet in profile.lightingPackets(target: target, effect: effect, color: color,
+                                              brightness: brightness, speed: speed) {
+            try send(packet, transport: transport)
         }
 
         // Preview frames stay in RAM; commit only the settled user selection.
-        if persist, let commit = profile.commitPacket() {
+        if persist, let commit = profile.commitPacket(for: .lighting) {
+            try Task.checkCancellation()
             try send(commit, transport: transport)
         }
 
@@ -245,7 +250,7 @@ actor HyperXDeviceService: DeviceService {
         // CRITICAL: NGENUITY ends every DPI batch with `DE 03 00`. Without
         // it the device accepts writes but does not apply them — this was
         // the cause of "DPI does not change when command is sent".
-        if let commit = active.commitPacket() {
+        if let commit = active.commitPacket(for: .dpi) {
             try send(commit, transport: transport)
         }
     }
@@ -259,14 +264,8 @@ actor HyperXDeviceService: DeviceService {
             throw HIDError.unsupportedOperation("DPI")
         }
 
-        let oneBased = UInt8(max(1, min(5, profile)))
-        var bytes = Data(count: HIDTransport.packetSize)
-        bytes[0] = 0xD3; bytes[3] = 0x01; bytes[4] = oneBased
-        let select = ProfilePacket(bytes: bytes,
-                                   send: .output, receive: .none,
-                                   label: "selectDPIProfile (live) p=\(profile)")
-        try send(select, transport: transport)
-        if let commit = active.commitPacket() {
+        try send(active.selectDPIPacket(profile), transport: transport)
+        if let commit = active.commitPacket(for: .dpi) {
             try send(commit, transport: transport)
         }
     }
@@ -301,7 +300,7 @@ actor HyperXDeviceService: DeviceService {
         for packet in packets {
             try send(packet, transport: transport)
         }
-        if let commit = active.commitPacket() {
+        if let commit = active.commitPacket(for: .dpi) {
             try send(commit, transport: transport)
         }
     }
@@ -327,10 +326,7 @@ actor HyperXDeviceService: DeviceService {
                 try send(packet, transport: transport)
             }
         }
-        // Same `DE 03 00` commit used after DPI batches — the device
-        // accepts the writes but doesn't apply them on the next click
-        // without it.
-        if let commit = active.commitPacket() {
+        if let commit = active.commitPacket(for: .buttons) {
             try send(commit, transport: transport)
         }
     }
@@ -505,7 +501,8 @@ actor HyperXDeviceService: DeviceService {
                     switch packet.receive {
                     case .input:
                         response = try transport.sendAndAwaitInputReport(
-                            report, as: sendKind, expectingCommand: command, timeoutMs: 1500)
+                            report, as: sendKind, expectingCommand: command, reportID: packet.reportID,
+                            responsePrefix: packet.responsePrefix, timeoutMs: 1500)
                     case .feature:
                         try transport.send(report, as: sendKind, verbose: verbose)
                         response = try transport.pollReport(

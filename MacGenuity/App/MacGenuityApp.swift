@@ -10,8 +10,6 @@ struct MacGenuityApp: App {
     @StateObject private var viewModel: DeviceViewModel
     @StateObject private var settings: AppSettings
     @StateObject private var presetStore: PresetStore
-    @StateObject private var history: BatteryHistory
-    @StateObject private var deviceStates: DeviceStateStore
 
     @StateObject private var updater: AppUpdater
 
@@ -35,14 +33,8 @@ struct MacGenuityApp: App {
         DockPolicyManager.shared.install()
 
         let settings = AppSettings()
-        let history = BatteryHistory()
         let presetStore = PresetStore()
-        let deviceStates = DeviceStateStore()
-        let viewModel = DeviceViewModel(
-            history: history,
-            presetStore: presetStore,
-            deviceStates: deviceStates
-        )
+        let viewModel = DeviceViewModel(presetStore: presetStore)
         _updater = StateObject(wrappedValue: AppUpdater())
         viewModel.attach(settings: settings)
         viewModel.showInputMonitoringHelp = { [weak viewModel] in
@@ -52,8 +44,6 @@ struct MacGenuityApp: App {
         _viewModel = StateObject(wrappedValue: viewModel)
         _settings = StateObject(wrappedValue: settings)
         _presetStore = StateObject(wrappedValue: presetStore)
-        _history = StateObject(wrappedValue: history)
-        _deviceStates = StateObject(wrappedValue: deviceStates)
 
         // Request permissions at launch, independently of menu rendering.
         Task { @MainActor in
@@ -66,13 +56,8 @@ struct MacGenuityApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(
-                viewModel: viewModel,
-                settings: settings,
-                presetStore: presetStore,
-                history: history
-            )
-            .environmentObject(updater)
+            MenuContent(viewModel: viewModel, settings: settings)
+                .environmentObject(updater)
         } label: {
             MenuBarLabel(viewModel: viewModel, settings: settings)
                 .onChange(of: settings.refreshInterval) { interval in

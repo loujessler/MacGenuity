@@ -57,6 +57,7 @@ enum ConfigurableDevice: Identifiable, Hashable {
             let name = fp.lowercaseProduct
             if name.contains("cast") || name.contains("mic") { return .microphone }
             if name.contains("cloud") || name.contains("headset") { return .headset }
+            if name.contains("pulsefire mat") || name.contains("mouse pad") { return .other }
             return name.contains("pulsefire") || name.contains("mouse") ? .mouse : .other
         case .microphone:
             return .microphone

@@ -1,204 +1,71 @@
 <p align="center">
-    <img src="https://img.shields.io/github/v/release/loujessler/macgenuity">
-    <img src="https://img.shields.io/github/license/loujessler/macgenuity">
-    <img src="https://img.shields.io/github/stars/loujessler/macgenuity">
-    <a href="https://loujessler.github.io/MacGenuity/">
-      <img src="https://img.shields.io/badge/Donate-Support-blue">
-    </a>
+  <img src="MacGenuity/Resources/AppIcon.png" width="88" height="88" alt="MacGenuity">
+</p>
+<h1 align="center">MacGenuity</h1>
+<p align="center">Your HyperX mouse and microphone, one click from the macOS menu bar.</p>
+<p align="center">
+  <a href="https://github.com/loujessler/MacGenuity/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/loujessler/MacGenuity?style=flat-square&amp;color=b51631&amp;label=release"></a>
+  <img alt="macOS 13 or later" src="https://img.shields.io/badge/macOS-13%2B-343840?style=flat-square">
+  <img alt="Universal binary for Apple Silicon and Intel" src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-343840?style=flat-square">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-343840?style=flat-square"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/loujessler/MacGenuity/releases/latest"><strong>Download for macOS</strong></a> ·
+  <a href="#device-support">Device support</a> ·
+  <a href="#build-from-source">Build from source</a> ·
+  <a href="CHANGELOG.md">Release notes</a>
 </p>
 
----
+![MacGenuity in dark and light appearance. A connected Pulsefire Haste Wireless reports 41% battery, 1600 DPI and multicolour lighting.](docs/menu-preview.png)
 
-# MacGenuity
+## Install
 
-A lightweight macOS menu-bar application for monitoring and controlling HyperX peripherals — wireless mice, USB microphones, and headset families.
+1. Download the universal DMG from the [latest release](https://github.com/loujessler/MacGenuity/releases/latest).
+2. Open the image, drag **MacGenuity** to **Applications**, then launch the installed app.
+3. Click the battery or HyperX icon in the menu bar. Open **Settings → Devices** to configure a peripheral.
 
-Built with Swift and SwiftUI. Software updates use Sparkle. Distributed as a single self-contained `.app`.
+**Already on 0.4.0 or later?** Open **Check for Updates…** in the menu, or use **Settings → General → Check for Updates…**. In 1.0 the menu command lives under **More (•••)**. Sparkle verifies the signed feed and download. Automatic checks and installation are configurable in General. Earlier versions need one manual DMG upgrade.
 
----
+<details>
+<summary>First launch, Gatekeeper and USB permissions</summary>
 
-## Overview
+Public builds use an ad-hoc signature and ship without Apple notarization. Each release includes a <code>SHA256SUMS</code> file. Download it alongside the DMG and run <code>shasum -a 256 -c SHA256SUMS</code> in the download directory. If Gatekeeper blocks the verified app, use <strong>System Settings → Privacy &amp; Security → Open Anyway</strong> when macOS offers it.
 
-MacGenuity surfaces real-time device state and lets you change lighting, DPI, button mappings and microphone state from the macOS menu bar — without HP's NGenuity software or any background daemons.
+MacGenuity opens the Haste receiver's vendor-defined USB interface directly. If macOS requires Input Monitoring for a device, the app offers <strong>Open System Settings…</strong> and <strong>Relaunch</strong>. With an ad-hoc build, an update can require granting access again. A stale entry can be reset under <strong>Already enabled?</strong> in the permission window. Microphone controls use CoreAudio.
 
-The project is intentionally a native macOS utility. It talks to the mouse through IOKit HID directly, and to the audio subsystem through CoreAudio.
+</details>
 
----
+## In the menu bar
 
-## Features
+| At a glance | In device settings |
+| --- | --- |
+| Battery percentage, charging and low-battery indicator | Battery history for the last 10 hours and trend. Alert threshold and refresh interval are in General. |
+| Active DPI and wheel colour on the original Haste Wireless | Five DPI levels with indicator colours, wheel effects, intensity and named lighting presets |
+| Microphone mute state and a switch when the device supports it | Input level, default input and device properties |
+| A sleeping receiver prompts you to wake the mouse | Firmware, USB IDs and last battery reading |
 
-### Devices sidebar (BetterDisplay-style)
+Opening the menu refreshes the original Haste Wireless from the receiver. A physical DPI-button change is reflected on the next read. Single-colour effects have a swatch and hex value. A cycling palette shows **Multicolour**, and zero brightness shows **Off**.
 
-The Settings window's **Devices** tab lists every attached HyperX peripheral on the left. The detail pane on the right shows ONLY the controls that device actually supports — lighting and DPI for mice, audio controls for microphones. There is no top-level "Lighting" or "DPI" tab any more; those editors live inside the device they belong to.
+## Device support
 
-### Mouse monitoring
+| Device | Available controls | Verification |
+| --- | --- | --- |
+| **Pulsefire Haste Wireless** (PF002) | Battery, wheel lighting, active DPI, five editable levels, button assignments and firmware | USB receiver `03F0:028E` tested on hardware. Cable `03F0:048E` uses the same control protocol. |
+| **Pulsefire Haste 2 Wireless** | Battery monitoring through receiver `03F0:0F98` | Numbered HID reports checked against two independent clients and covered by packet tests. Hardware confirmation is still open. |
+| **SoloCast** | CoreAudio mute, input level, sample rate and default-input status, as exposed by the device | Detected on hardware. Mute and level controls follow the CoreAudio write capabilities. |
+| **QuadCast 2 S** | Per-LED colour, spatial effects, 108-LED painter, 32-frame animation editor and return to firmware animation | Captured USB descriptors, 12 × 9 lamp geometry and dedicated protocol and renderer tests. |
+| **Other Cast microphones** | CoreAudio properties and available audio controls | Audio features depend on the model. RGB control is specific to QuadCast 2 S. |
+| **Other Pulsefire mice** | Generic NGENUITY protocol for compatible mice | Support varies by firmware and model. The original Haste and Haste 2 each have a dedicated profile. |
 
-- Battery percent + charging state in the menu bar
-- Battery-history sparkline (last ~10 hours) and trend indicator
-- Device name, firmware version, VID/PID
-- Configurable poll interval and low-battery threshold
-- Low-battery system notification (UNUserNotificationCenter, throttled)
+**Original Haste Wireless.** Choose Static, Breathing, Spectrum or Trigger fade. Brightness and colour intensity scale the frames stored in the mouse. Live preview saves once edits settle. DPI ranges from 200 to 16,000 in steps of 100. Remap the middle, side and DPI buttons from the Buttons section.
 
-### Mouse lighting (Pulsefire family)
+**Protocol references.** The original Haste implementation uses NGENUITY USB captures. The Haste 2 battery profile has a separate report format. [Haste captures](https://github.com/evan-razzaque/open-pulsefire-haste/tree/294f7f0edf6d8f4e1db668d08a85828c452c9f69/captures) · [PF002 protocol](https://github.com/okms/haste-control/blob/472226f96dfc50ecc81f3657b615cea109651f1a/docs/PROTOCOL.md) · [Haste 2 Linux client](https://github.com/Tammo0987/hyperx-battery/blob/2cac0deb57efd5979a76d89394929484d612848b/src/device.rs) · [Haste 2 cross-platform client](https://github.com/vitaliishchudlo/haste2-battery-status/blob/main/src/haste2_battery/protocol.py) · [QuadCast 2 S protocol notes](docs/quadcast-2s-protocol.md)
 
-- Interactive RGB picker with coloured-track sliders, hex input, live preview
-- "Live update" streams colour to the device while sliders move (on by default)
-- Named lighting presets — save current config, recall in one click
-- LED target / effect / brightness / speed / opacity controls
-- Haste-family direct-colour probe with throttled (1 Hz) keepalive
+**Candidates for future profiles.** The Alloy Origins Core keyboard, Fury Ultra and Pulsefire Mat have published OpenRGB implementations. They are candidates for device testing and integration in MacGenuity. [Alloy Origins Core](https://github.com/CalcProgrammer1/OpenRGB/tree/master/Controllers/HyperXKeyboardController/HyperXAlloyOriginsCoreController) · [HyperX mouse mats](https://github.com/CalcProgrammer1/OpenRGB/tree/master/Controllers/HyperXMousematController)
 
-### Mouse DPI
+## Build from source
 
-- Per-profile DPI value (50 – 16 000, 50-step rounded)
-- Up to 5 profiles with per-level enable bitmap and indicator colour
-- NGenuity-style batch apply: writes every level + selects active in one `D3` packet flow, committed with `DE 03 00`
-
-### Mouse button remapping (`0xD4` protocol)
-
-- Re-bind middle / side / DPI buttons to mouse functions, media keys, or DPI cycle
-- Per-device state persisted between sessions; restore-defaults per-row or batch
-- Survives reboot via the same commit pattern as DPI
-
-### Microphone monitoring & control (CoreAudio)
-
-- Auto-detects HyperX QuadCast / QuadCast S / QuadCast 2 / QuadCast 2S / DuoCast / SoloCast
-- Mute / unmute toggle directly in the menu-bar tray
-- Volume slider, sample rate, stream count, default-input badge in the detail pane
-- **Push-based state sync** via `AudioObjectAddPropertyListenerBlock` — physical tap-to-mute on the device flips the in-app toggle within ~50 ms, no polling delay
-
-### Branded menu-bar icon
-
-- Custom mark from `Resources/MenuBarIcon.pdf` (preferred) or `MenuBarIcon.png`
-- Loaded as a template `NSImage` so macOS tints it for dark / light menu bars
-- Built-in `HyperXMark` template fallback if no asset is shipped
-
-### Extensible device profiles
-
-- `DeviceProfile` protocol with capability flags — UI hides controls a profile doesn't support
-- Score-based registry picks the best profile per discovered device
-- Shipped profiles: `DefaultHyperXProfile` (NGenuity2 / Pulsefire family), `PulsefireHasteProfile` (worked example), `QuadCastProfile` (Cast-family detection; QuadCast 2 S hardware controls use a dedicated service)
-- Contributors add their device by copying a profile, tweaking packet bytes, and registering it. See [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md).
-
-### Diagnostics window
-
-A dedicated window for contributors and curious users:
-
-- Live tail of structured logs, filterable by level and channel
-- Every detected HyperX-shaped HID interface with its full fingerprint and the resolved profile
-- Raw-packet sender — paste hex, choose send/receive transport, inspect the response
-- One-click "Copy hex" / "Open log file"
-
-### Settings window
-
-Settings (⌘,) opens on **Devices**. Connecting a supported mouse selects it automatically and exposes its lighting, DPI and button controls. Select a microphone in the sidebar to adjust its audio settings while the mouse stays connected. **General** contains app and update preferences.
-
-### System integration
-
-- Launch at login via `SMAppService`
-- Automatic Input Monitoring request when a connected device requires it
-- One-click "Relaunch" button to pick up freshly-granted TCC permission
-- Structured file logging with rotation (5 MB cap)
-- `os_log` mirroring (subsystem `io.github.loujessler.macgenuity`)
-
----
-
-## Architecture
-
-The codebase is organized into clearly bounded layers. UI never touches IOKit or CoreAudio directly — those system APIs live in the Infrastructure layer and are exposed to the rest of the app through the protocols in `Domain/Services.swift`.
-
-```
-MacGenuity/
-├── App/
-│   └── MacGenuityApp.swift                 Scene wiring (MenuBarExtra + Settings + Diagnostics)
-├── Domain/
-│   ├── Models.swift                        Pure value types (RGBColor, MouseInfo, ButtonAssignment, …)
-│   ├── QuadCast2SLighting.swift             Lamp geometry, effects, palettes, and authored frames
-│   ├── Errors.swift                        DeviceError / HIDError / PermissionError
-│   ├── Services.swift                      DeviceService / AudioService / QuadCast2SService protocols
-│   ├── DeviceProfile.swift                 Public extension point for community-authored profiles
-│   ├── ConfigurableDevice.swift            Unified HID + audio device type for the sidebar
-│   └── Config/
-│       └── DonationConfig.swift            Decodes Resources/donations.json (graceful fallback)
-├── Features/
-│   ├── MenuBar/
-│   │   ├── MenuBarLabel.swift              Tray icon + battery / HyperX mark
-│   │   ├── MenuContent.swift               Dropdown content (mic mute toggles, permission flow, …)
-│   │   └── HyperXMark.swift                Branded template NSImage with PDF/PNG loader
-│   ├── Lighting/
-│   │   ├── InteractiveColorPicker.swift    RGB sliders + hex + recent colours
-│   │   └── PresetsView.swift               Named lighting preset save / apply / rename / delete
-│   ├── Battery/
-│   │   └── BatterySparkline.swift          Path-drawn chart of recent samples
-│   ├── Diagnostics/
-│   │   └── DiagnosticsWindow.swift         Candidate list + raw sender + live log tail
-│   └── Settings/
-│       ├── SettingsScene.swift             Devices / General / About panes
-│       └── QuadCast2SAdvancedControls.swift 108-LED effect and frame-animation editor
-├── Infrastructure/
-│   ├── HID/
-│   │   ├── HIDPermission.swift             IOHIDCheckAccess / IOHIDRequestAccess
-│   │   ├── HIDDeviceFinder.swift           Enumerate HyperX-shaped HID interfaces (no opens)
-│   │   ├── HIDTransport.swift              One IOHIDDevice handle, send/receive, persistent input callback
-│   │   ├── HyperXDeviceService.swift       Actor that dispatches through the resolved profile
-│   │   ├── QuadCast2SHardwareService.swift Geometry discovery + rate-limited LampArray stream actor
-│   │   └── Profiles/
-│   │       ├── PacketUtils.swift           Helpers (build, parse, validate)
-│   │       ├── ProfileRegistry.swift       Score-based device → profile resolution
-│   │       ├── DefaultHyperXProfile.swift  NGenuity2 reference implementation (lighting / DPI / buttons)
-│   │       ├── PulsefireHasteProfile.swift Worked example for new contributors
-│   │       ├── QuadCastProfile.swift       Cast-family detection (QuadCast / DuoCast / SoloCast)
-│   │       ├── QuadCast2SProtocol.swift     Verified packet builders and parsers
-│   │       ├── QuadCast2SEffectRenderer.swift Pure spatial and authored-frame renderer
-│   │       └── PROFILES.md                 Step-by-step authoring guide
-│   ├── Audio/
-│   │   └── CoreAudioMicrophoneService.swift  CoreAudio enumeration + property listeners + setters
-│   └── System/
-│       ├── AppSettings.swift               UserDefaults + SMAppService
-│       ├── BatteryHistory.swift            Persistent rolling timeline
-│       ├── PresetStore.swift               Named lighting presets + recent colours
-│       ├── DeviceStateStore.swift          Per-device lighting / DPI / button assignments
-│       ├── QuadCast2SStateStore.swift       Per-microphone effect and frame-editor state
-│       ├── DockPolicyManager.swift         LSUIElement-aware Dock-icon policy
-│       └── Notifier.swift                  Low-battery system notifications
-├── Shared/
-│   ├── Logger.swift                        Levelled logger + rotating file + tail ring buffer
-│   └── Hex.swift                           Hex formatting helpers
-├── ViewModels/
-│   └── DeviceViewModel.swift               @MainActor; the view model SwiftUI observes
-└── Resources/
-    ├── Info.plist
-    ├── donations.json
-    ├── AppIcon.png         (optional — 1024×1024, auto-compiled into AppIcon.icns at build time)
-    └── MenuBarIcon.pdf     (optional — vector template for the tray icon)
-```
-
-### Concurrency model
-
-- `DeviceViewModel` is `@MainActor`. Every `@Published` mutation runs on the main thread.
-- `HyperXDeviceService` is an `actor` — one HID I/O at a time, no parallel reports.
-- The menu bar UI never blocks: HID work is awaited, never executed inline.
-- Tasks capture `self` weakly so the view model can be torn down without leaks.
-
-### Permission handling
-
-MacGenuity checks the selected HID interface when it discovers a connected mouse. A vendor-defined control interface uses the access macOS grants to that interface. Standard input interfaces require Input Monitoring. A refusal from macOS stops further attempts until the grant or device changes.
-
-When permission is needed, MacGenuity requests it once if the system has no decision yet. A recovery window and the menu provide **Open System Settings…** and **Relaunch**. **Already enabled?** includes a reset for this app's Input Monitoring entry. Relaunch waits for the old process to exit before opening the same app.
-
-### HID layer hardening
-
-- The input-report buffer is sized from the device's `kIOHIDMaxInputReportSizeKey` (with a sane minimum and a 4 KiB cap), not a hardcoded 65 bytes. IOKit writes up to that size into the registered buffer regardless of what we pass — using a fixed 65-byte buffer caused heap overruns on devices with larger reports.
-- The capture object that owns the buffer is held by `Unmanaged.passRetained` for the entire registration window, drained from the run loop after unregistering, and released only after IOKit has confirmed unregistration. A stray late callback cannot dereference a freed buffer.
-- Every callback bounds-checks `reportLength` against the registered capacity before constructing a `Data`.
-- The IOHIDDevice handle is opened once and reused across polls. The previous open/close-per-poll pattern produced unnecessary IOKit churn and combined badly with the 22 Hz lighting keepalive.
-- The static-color keepalive runs at 1 Hz instead of 22 Hz.
-- All packet validators reject empty / echo / out-of-range responses with explicit `HIDError` cases.
-
----
-
-## Build
-
-Requires only the Xcode Command Line Tools:
+Install Xcode Command Line Tools and build from the repository root.
 
 ```bash
 xcode-select --install
@@ -206,242 +73,34 @@ xcode-select --install
 open build/MacGenuity.app
 ```
 
-The build script:
-
-- Auto-detects Apple Silicon vs. Intel for a single-arch dev build (`arm64-apple-macos13` / `x86_64-apple-macos13`).
-- Optional **universal (fat) build** for release: `HYPERX_UNIVERSAL=1 ./build.sh` runs `swiftc` twice (once per arch) and merges the slices with `lipo`. The resulting `.app` runs on both Apple Silicon and Intel.
-- Picks a signing identity in priority order: `HYPERX_SIGN_IDENTITY` env → `"MacGenuity Dev"` self-signed → first `"Apple Development:"` cert → ad-hoc fallback.
-- Adds the `com.apple.security.get-task-allow` entitlement for **development** certs so `lldb` can attach; strips it for Developer ID certs to keep the build notarization-eligible.
-- Optionally bundles a custom menu-bar icon (`Resources/MenuBarIcon.pdf|png`) and app icon (`Resources/AppIcon.icns` or `AppIcon.png`, auto-compiled through `sips`+`iconutil`).
-
-Writes the result to `build/MacGenuity.app`.
-
-### In-app updates
-
-Install version 0.4.0 or later in Applications to receive signed updates from stable GitHub Releases. Choose **Check for Updates…** in the menu bar to check immediately. Settings → General controls automatic checks and installation. Both default to on. Sparkle checks daily, downloads updates in the background and normally installs them when the app quits. Versions through 0.3.2 need one manual DMG upgrade.
-
-For maintainers, increment both version fields in Info.plist, add the version to CHANGELOG.md and push the matching stable tag (for example, `v0.4.0`). After both CI jobs pass, GitHub Actions signs the universal DMG and the Sparkle feed and publishes them together. The dedicated Ed25519 key is in the maintainer's Keychain under the Sparkle account `io.github.loujessler.macgenuity.sparkle` and in the repository Actions secret `SPARKLE_PRIVATE_KEY`. Keep a secure backup of this key for future releases.
-
-### Distribution build (DMG for GitHub)
+For a universal release image, run the following commands. The packaging script mount-tests the DMG, checks the bundle signature and verifies the Applications link.
 
 ```bash
 HYPERX_UNIVERSAL=1 HYPERX_SIGN_IDENTITY=- HYPERX_ALLOW_DEBUG=0 ./build.sh
 bash tools/package-dmg.sh
 ```
 
-The packaging script reads the version from `Info.plist` and creates
-`build/MacGenuity-x.y.z.dmg`. It verifies the image, mounts it read-only,
-checks the app signature and Applications link, then ejects it.
+<details>
+<summary>Architecture, tests and releases</summary>
 
-To install, open the DMG, drag **MacGenuity** onto **Applications**, eject the
-image, and launch the installed app. Quit older copies before updating.
-Notification authorization is checked at launch. The app requests Input Monitoring when the attached device needs it.
-
-For a notarized release, build with your `Developer ID Application` identity
-instead of `-`, then sign, submit and staple the DMG:
+The SwiftUI scenes in <code>MacGenuity/Features</code> observe a main-actor <code>DeviceViewModel</code>. USB transactions run on the HID service actor. Profiles provide matching, packet encoding and reply parsing. Microphone state comes from CoreAudio property listeners. Sparkle handles distribution updates.
 
 ```bash
-codesign --sign "Developer ID Application: Your Name (TEAMID)" --timestamp build/MacGenuity-x.y.z.dmg
-xcrun notarytool submit build/MacGenuity-x.y.z.dmg --keychain-profile AC_PROFILE --wait
-xcrun stapler staple build/MacGenuity-x.y.z.dmg
+bash Tests/Regression/run.sh
+bash Tests/QuadCast2S/run.sh
+python3 Tests/Regression/installer_test.py
+python3 Tests/Regression/relaunch_test.py
+python3 Tests/Regression/relaunch_test.py --reset
 ```
 
-Developer ID credentials are required for that final signing/notarization step.
+For local development, <code>build.sh</code> selects <code>HYPERX_SIGN_IDENTITY</code>, a local <code>MacGenuity Dev</code> identity, an Apple Development identity, or ad-hoc signing, in that order. A stable signing identity lets macOS recognise subsequent builds for privacy grants. Set <code>HYPERX_ALLOW_DEBUG=0</code> for distribution.
 
----
+Stable releases increment the public version and the internal bundle number, add an entry to <code>CHANGELOG.md</code>, and tag the commit <code>vX.Y.Z</code>. CI runs tests on Apple Silicon and Intel, then publishes the universal DMG, its checksum and the Ed25519-signed Sparkle feed.
 
-## Requirements
+</details>
 
-- macOS 13 (Ventura) or later
-- Apple Silicon or Intel
-- Input Monitoring for protected HID interfaces, enabled in System Settings → Privacy & Security → Input Monitoring
+## Diagnostics and contributions
 
----
+Open **More → Diagnostics…** to inspect USB interfaces, see which profile matched and copy filtered logs. Local logs rotate at 5 MB in <code>~/Library/Logs/MacGenuity/MacGenuity.log</code>. When reporting a compatibility issue, include the model, connection type, VID/PID and the control that failed. [Profile authoring guide](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md) · [Contributing](CONTRIBUTING.md)
 
-## Distributing to other Macs (quarantine + notarization)
-
-When macOS Gatekeeper says
-
-> «Приложение «MacGenuity.app» повреждено, и его не удаётся открыть»  
-> "MacGenuity.app is damaged and can't be opened. Move it to the Trash."
-
-this can indicate Gatekeeper rejecting a non-notarized download. Verify the
-release checksum before proceeding; the message alone does not prove integrity.
-
-### For users
-
-Current releases are ad-hoc signed and not notarized. After dragging the app
-from the DMG into Applications, follow macOS's security approval flow. If a
-verified download is blocked as damaged, the existing bundle-only workaround is:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/MacGenuity.app
-open /Applications/MacGenuity.app
-```
-
-This affects only MacGenuity. DMG packaging does not replace Developer ID signing
-or notarization. Older ZIP releases can still use `tools/install.sh`.
-
-### For releasers
-
-Use Developer ID signing and Apple notarization as shown in
-[Distribution build](#distribution-build-dmg-for-github).
-
----
-
-## Troubleshooting
-
-### Tray / app icon shows the wrong glyph after upgrading
-
-After a version bump or a bundle-identifier change, macOS sometimes shows a stale icon cached against the old identity. The fix is to nudge Launch Services + Icon Services + Finder:
-
-```bash
-# Re-register the new bundle
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MacGenuity.app
-
-# Refresh the system icon caches
-sudo rm -rf /Library/Caches/com.apple.iconservices.store
-
-# Restart the surfaces that draw icons
-killall Finder
-killall Dock
-killall SystemUIServer
-```
-
-If the icon in **System Settings → Privacy & Security → Input Monitoring** still looks generic, scroll the list — macOS sometimes lazily redraws the row.
-
-### Custom AppIcon.png looks blurry at small sizes
-
-`sips -z` downscaling from a single 1024 × 1024 source produces acceptable but not pixel-perfect 16 × 16 / 32 × 32 entries. For a polished release icon, design a proper `.iconset` folder by hand (one PNG per size from 16 × 16 up to 1024 × 1024 with `@2x` variants) and ship it as `Resources/AppIcon.icns` — `build.sh` will copy it straight through instead of regenerating.
-
----
-
-## TCC and code signing
-
-macOS uses the app’s code-signing designated requirement to track privacy grants. Ad-hoc releases have a requirement tied to the executable’s code hash, so replacing the app can invalidate a previous Input Monitoring grant. A stable Developer ID signing identity allows macOS to recognise subsequent versions. The Pulsefire Haste Wireless receiver can use its vendor-defined USB interface without this grant when macOS permits the connection.
-
-To make grants survive rebuilds during development, use a stable signing identity. `build.sh` auto-detects, in this order:
-
-1. `HYPERX_SIGN_IDENTITY` env var (explicit override).
-2. A self-signed identity named `MacGenuity Dev` in the login keychain.
-3. The first available `Apple Development:` cert (provides a stable signing identity).
-4. Ad-hoc fallback (cdhash changes every build).
-
-To create a self-signed identity:
-
-1. Open *Keychain Access* → menu bar → *Certificate Assistant* → *Create a Certificate…*
-2. Name `MacGenuity Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**.
-3. Trust the cert in your login keychain.
-4. Rebuild: `build.sh` will pick it up automatically.
-
-If a stale grant has to be reset:
-
-```bash
-tccutil reset ListenEvent io.github.loujessler.macgenuity
-# Then remove MacGenuity from System Settings → Privacy & Security
-# → Input Monitoring (− button), relaunch the app, accept the prompt.
-```
-
----
-
-## Logs
-
-Log file: `~/Library/Logs/MacGenuity/MacGenuity.log`. Rotates at 5 MB.
-
-Levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, scoped by channel (`app`, `hid`, `audio`, `settings`, `ui`, `lighting`). Output is also mirrored to `os_log` and shows up in Console.app under subsystem `io.github.loujessler.macgenuity`.
-
----
-
-## Custom branding (icons)
-
-You can override both the app icon (Dock) and the menu-bar tray icon without touching code. `build.sh` looks for files in `MacGenuity/Resources/` in this order:
-
-| Slot              | Preferred                        | Fallback                | If neither is present       |
-| ----------------- | -------------------------------- | ----------------------- | --------------------------- |
-| **Tray icon**     | `MenuBarIcon.pdf` (vector template, 22×22 pt, transparent background, black on alpha) | `MenuBarIcon.png` (any size — auto-baked to 22 pt height at load) | Programmatic `HyperXMark`   |
-| **App icon**      | `AppIcon.icns`                   | `AppIcon.png` (1024 × 1024, auto-compiled to `.icns` via `sips` + `iconutil`) | Programmatic stylised "X"   |
-
-The tray icon **must** be a template image (only the alpha channel matters — macOS picks the colour based on the menu-bar appearance). The app icon can use full colour.
-
-To preview a change, drop the file into `MacGenuity/Resources/` and run `./build.sh`. The build script's resource copy is a whitelist — files not in the list don't end up in the bundle.
-
----
-
-## Limitations / non-goals
-
-- Firmware flashing (out of scope).
-- Writing settings to onboard memory (`SAVE_TO_HARDWARE`) — intentionally not implemented to avoid corrupting non-volatile mouse memory.
-- Full LED / DPI control for every HyperX mouse. Those protocols remain partially reverse-engineered and several effects are model-specific; the QuadCast 2 S LampArray path is independently implemented.
-- Polling rate configuration.
-- QuadCast 2 S polar-pattern readback and changes. The candidate status report
-  did not reliably match the microphone's physical selector, so MacGenuity
-  intentionally exposes neither state nor controls until the protocol can be
-  independently captured and verified.
-
-Some functionality is intentionally restricted to avoid unsafe device operations.
-
----
-
-## Changelog
-
-Release history lives in [CHANGELOG.md](CHANGELOG.md) and GitHub Releases,
-linked from the app's About pane. Public versions use `major.minor.patch`
-(for example, `0.3.2`): patch releases fix issues, minor releases add features,
-and major releases mark breaking changes. While the major version is zero,
-the app remains under active development. The internal bundle build number is
-kept for macOS and is not displayed in the UI or release titles.
-
----
-
-## Roadmap
-
-- RGB support for additional QuadCast / DuoCast revisions (their controller protocols differ from QuadCast 2 S)
-- QuadCast 2 S polar-pattern support only after both state and write traffic are independently captured and verified on hardware
-- Macro recording on remappable buttons (`0xD5` / `0xD6` protocol — read by `0xD4` editor, no writer yet)
-- Wired-mouse support
-- Save current lighting / DPI / button config to onboard memory (behind an explicit confirmation)
-- Polling-rate configuration (`0xD0` packet, documented but unused)
-- Auto-update check against GitHub releases (read-only)
-- Localization (UI is currently English-only)
-- More device profiles — please contribute! See [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md)
-
----
-
-## ❤️ Support
-
-MacGenuity is an independent open-source project for macOS.
-
-If it replaces proprietary software in your setup or saves you time, consider supporting development:
-
-<p align="center">
-  <a href="https://loujessler.github.io/MacGenuity/">
-    <img src="https://img.shields.io/badge/Support-Donate-blue?style=for-the-badge">
-  </a>
-</p>
-
-<p align="center">
-  <sub>
-    Supports cards and crypto · helps expand device compatibility and maintain the project
-  </sub>
-</p>
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
----
-
-## Contributing
-
-The project is built around a community-extensible profile system. The most valuable contribution is **support for additional HyperX devices** — see [PROFILES.md](MacGenuity/Infrastructure/HID/Profiles/PROFILES.md) for a step-by-step authoring guide and [CONTRIBUTING.md](CONTRIBUTING.md) for general guidelines.
-
-The built-in **Diagnostics window** (Menu → Diagnostics, ⌘D) is designed specifically to help contributors:
-
-- Lists every HyperX-shaped HID interface with its full fingerprint (VID/PID, usage page, report sizes).
-- Shows which profile claimed each interface — useful for verifying a new `match(_:)` function.
-- "Raw packet sender" lets you paste a hex packet, choose `output`/`feature` send transport, choose `input`/`feature`/`none` receive transport, and inspect the response — all without writing code first.
-- Live-tail of structured logs filterable by channel and level. One-click "Copy" exports the visible window to the clipboard so you can paste it into a PR.
-
-Don't have a HyperX device handy but want to help? Reverse-engineering, code review, edge-case testing, and improving the diagnostics tooling are all welcome.
+MacGenuity is an independent, MIT-licensed project. Contributions help cover more hardware revisions. [Support development](https://loujessler.github.io/MacGenuity/) · [License](LICENSE)

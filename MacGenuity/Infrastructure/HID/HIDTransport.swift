@@ -143,7 +143,7 @@ final class HIDTransport {
         }
     }
 
-    func send(_ packet: Data, as kind: ReportKind, verbose: Bool = true) throws {
+    func send(_ packet: Data, as kind: ReportKind, reportID: UInt8 = 0, verbose: Bool = true) throws {
         guard isOpen else { throw HIDError.openFailed(kIOReturnNotOpen) }
         guard packet.count == Self.packetSize || packet.count == Self.packetSize + 1 else {
             throw HIDError.invalidPacketSize(packet.count)
@@ -155,7 +155,7 @@ final class HIDTransport {
             return IOHIDDeviceSetReport(
                 device,
                 kind.hidType,
-                0,
+                CFIndex(reportID),
                 base.assumingMemoryBound(to: UInt8.self),
                 packet.count
             )
@@ -214,50 +214,46 @@ final class HIDTransport {
 
     /// Sends `packet`, then waits for the persistent input-report callback
     /// to surface a report containing `command`. The callback runs on the
-    /// main run loop; we just poll the capture for matches.
+    /// main run loop and wakes the waiting service thread as soon as it matches.
     func sendAndAwaitInputReport(_ packet: Data,
                                  as kind: ReportKind,
                                  expectingCommand command: UInt8,
+                                 reportID: UInt8 = 0,
+                                 responsePrefix: [UInt8]? = nil,
                                  timeoutMs: Int) throws -> Data
     {
         guard isOpen, isScheduled else {
             throw HIDError.openFailed(kIOReturnNotOpen)
         }
 
-        inputCapture.beginWaiting(for: command)
+        inputCapture.beginWaiting(for: command, prefix: responsePrefix)
         defer { inputCapture.endWaiting() }
 
-        try send(packet, as: kind)
-
-        let pollIntervalSeconds = 0.02
+        try send(packet, as: kind, reportID: reportID)
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
-        while Date() < deadline {
-            if let data = inputCapture.takeMatch() {
-                logger.debug(.hid, "receive input matched 0x\(Hex.u8(command)) \(data.hexDump())")
-                return data
-            }
-            Thread.sleep(forTimeInterval: pollIntervalSeconds)
-        }
-        throw HIDError.readTimeout
+        guard let data = inputCapture.waitForMatch(until: deadline) else { throw HIDError.readTimeout }
+        logger.debug(.hid, "receive input matched 0x\(Hex.u8(command)) \(data.hexDump())")
+        return data
     }
 
     private static let inputCallback: IOHIDReportCallback = {
-        context, result, _, _, _, report, reportLength in
+        context, result, _, _, reportID, report, reportLength in
         guard result == kIOReturnSuccess, let context else { return }
         let capture = Unmanaged<InputReportCapture>.fromOpaque(context).takeUnretainedValue()
-        capture.handle(report, length: reportLength)
+        capture.handle(report, length: reportLength, reportID: reportID)
     }
 }
 
 /// Owns the input-report buffer for the lifetime of its enclosing transport.
 /// Buffer is heap-allocated via `UnsafeMutablePointer.allocate` so the pointer
 /// we hand to IOKit is stable across Swift's lifetime management.
-private final class InputReportCapture {
+final class InputReportCapture {
     let capacity: Int
     let bufferPointer: UnsafeMutablePointer<UInt8>
 
-    private let lock = NSLock()
+    private let lock = NSCondition()
     private var expectedCommand: UInt8?
+    private var responsePrefix: [UInt8]?
     private var matched: Data?
 
     init(capacity: Int) {
@@ -272,9 +268,10 @@ private final class InputReportCapture {
         bufferPointer.deallocate()
     }
 
-    func beginWaiting(for command: UInt8) {
+    func beginWaiting(for command: UInt8, prefix: [UInt8]?) {
         lock.lock()
         expectedCommand = command
+        responsePrefix = prefix
         matched = nil
         lock.unlock()
     }
@@ -282,21 +279,19 @@ private final class InputReportCapture {
     func endWaiting() {
         lock.lock()
         expectedCommand = nil
-        // Leave any unread match in place — `takeMatch` clears it. We don't
-        // want to lose a report that arrived in the gap between `endWaiting`
-        // and the caller checking `takeMatch` once more.
+        responsePrefix = nil
+        matched = nil
         lock.unlock()
     }
 
-    func takeMatch() -> Data? {
+    func waitForMatch(until deadline: Date) -> Data? {
         lock.lock()
         defer { lock.unlock() }
-        let data = matched
-        matched = nil
-        return data
+        while matched == nil && lock.wait(until: deadline) {}
+        return matched
     }
 
-    func handle(_ report: UnsafePointer<UInt8>, length reportLength: CFIndex) {
+    func handle(_ report: UnsafePointer<UInt8>, length reportLength: CFIndex, reportID: UInt32) {
         // Defensive bounds check — corrupted reports must never construct a
         // Data with a length larger than the buffer we registered.
         guard reportLength > 0, Int(reportLength) <= capacity else {
@@ -309,9 +304,17 @@ private final class InputReportCapture {
         defer { lock.unlock() }
         guard let command = expectedCommand, matched == nil else { return }
 
-        let data = Data(bytes: report, count: Int(reportLength))
-        if PacketUtils.findCommandOffset(in: data, command: command) != nil {
-            matched = data
+        var data = Data(bytes: report, count: Int(reportLength))
+        if let responsePrefix {
+            if reportID != 0 {
+                guard let id = UInt8(exactly: reportID), responsePrefix.first == id else { return }
+                if data.first != id { data.insert(id, at: 0) }
+            }
+            guard data.starts(with: responsePrefix) else { return }
+        } else if PacketUtils.findCommandOffset(in: data, command: command) == nil {
+            return
         }
+        matched = data
+        lock.signal()
     }
 }

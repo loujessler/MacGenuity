@@ -27,7 +27,7 @@ struct MenuBarLabel: View {
             Image(systemName: "lock.shield")
         } else if let battery = viewModel.battery, viewModel.status != .disconnected {
             HStack(spacing: 2) {
-                Image(systemName: batteryIcon(battery))
+                Image(systemName: battery.symbol)
                 if settings.showBatteryPercent {
                     Text("\(battery.percent)%")
                         .font(.system(size: 11, weight: .medium))
@@ -38,14 +38,4 @@ struct MenuBarLabel: View {
         }
     }
 
-    private func batteryIcon(_ b: BatteryState) -> String {
-        if b.isCharging { return "bolt" }
-        switch b.percent {
-        case 75...:    return "battery.100"
-        case 50..<75:  return "battery.75"
-        case 25..<50:  return "battery.50"
-        case 10..<25:  return "battery.25"
-        default:       return "battery.0"
-        }
-    }
 }

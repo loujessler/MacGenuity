@@ -20,6 +20,9 @@ final class DeviceViewModel: ObservableObject {
     @Published private(set) var status: MouseStatus = .unknown
     @Published private(set) var info: MouseInfo?
     @Published private(set) var battery: BatteryState?
+    @Published private(set) var reportedDPI: DeviceDPIState?
+    @Published private(set) var wheelColour: WheelColour?
+    @Published private(set) var mouseAsleep = false
     @Published private(set) var lastUpdate: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var microphones: [MicrophoneInfo] = []
@@ -222,7 +225,8 @@ final class DeviceViewModel: ObservableObject {
     }
 
     private func refreshMicrophones() {
-        microphones = audioService.connectedMicrophones()
+        let connected = audioService.connectedMicrophones()
+        if microphones != connected { microphones = connected }
         microphoneMessages = microphoneMessages.filter { id, _ in microphones.contains { $0.id == id } }
     }
 
@@ -233,8 +237,10 @@ final class DeviceViewModel: ObservableObject {
         // Enumeration can block in IOKit; run it on the service actor.
         let devices = await deviceService.availableDevices()
         guard generation == selectionGeneration else { return }
-        if devices != availableDevices { deviceStates.setConnectedDevices(devices) }
-        self.availableDevices = devices
+        if devices != availableDevices {
+            deviceStates.setConnectedDevices(devices)
+            availableDevices = devices
+        }
 
         let mouse = devices.first { selectedDevice?.matchesAttachment($0) == true }
             ?? devices.first { $0.stableKey == selectedDeviceKey }
@@ -274,11 +280,13 @@ final class DeviceViewModel: ObservableObject {
         }
 
         do {
+            let dpiRevision = dpiSelectionRevision
+            let lightingRevision = lightingGeneration
             let snapshot = try await deviceService.probe()
             let newProfile = await deviceService.snapshotProfile()
             guard generation == selectionGeneration else { return }
             let newKey = newProfile?.fingerprint.stableKey
-            self.activeProfile = newProfile
+            if activeProfile != newProfile { activeProfile = newProfile }
 
             // Detect device-switch and CLEAR cached state. Without this,
             // unplugging a Pulsefire while a QuadCast remains attached
@@ -286,10 +294,13 @@ final class DeviceViewModel: ObservableObject {
             // bar — the new active profile (QuadCast) has no battery
             // capability and its probe returns nil battery, but the
             // previous `self.battery` was never reset.
-            if newKey != lastFingerprintKey {
+            let switched = newKey != lastFingerprintKey
+            if switched {
                 cancelLightingTasks()
                 self.info = nil
                 self.battery = nil
+                self.reportedDPI = nil
+                self.wheelColour = nil
                 self.lastError = nil
                 self.lastUpdate = nil
                 if let key = newKey, let fp = newProfile?.fingerprint {
@@ -302,6 +313,17 @@ final class DeviceViewModel: ObservableObject {
                     logger.info(.app, "active HID device cleared")
                 }
                 lastFingerprintKey = newKey
+            }
+            let asleep = snapshot.error == .mouseAsleep
+            if mouseAsleep != asleep { mouseAsleep = asleep }
+            if mouse.isPulsefireHasteWireless {
+                if dpiRevision == dpiSelectionRevision, reportedDPI != snapshot.dpi {
+                    reportedDPI = snapshot.dpi
+                }
+                if switched || lightingRevision == lightingGeneration,
+                   !lightingWriteInFlight, wheelColour != snapshot.wheelColour {
+                    wheelColour = snapshot.wheelColour
+                }
             }
             if let newInfo = snapshot.info { self.info = newInfo }
             if let battery = snapshot.battery {
@@ -369,6 +391,9 @@ final class DeviceViewModel: ObservableObject {
         buttonsMessage = nil
         info = nil
         battery = nil
+        reportedDPI = nil
+        wheelColour = nil
+        mouseAsleep = false
         lastUpdate = nil
         activeProfile = nil
         lastFingerprintKey = nil
@@ -384,29 +409,28 @@ final class DeviceViewModel: ObservableObject {
         lightingWriteInFlight = true
         defer { if lightingGeneration == lightingRevision { lightingWriteInFlight = false } }
 
-        // Opacity is software-side: pre-multiply the RGB before sending.
-        // This applies to all effects (static, breathing, etc.) and is
-        // independent from the hardware brightness byte.
-        let wireColor = state.effectiveColor
-
         do {
-            try await deviceService.applyLighting(
-                target: state.target,
-                effect: state.effect,
-                color: wireColor,
-                brightness: state.brightness,
-                speed: state.speed,
-                includeHasteProbe: persist && state.effect == .staticColor && state.includeHasteProbe, persist: persist
-            )
+            try await writeLighting(state, for: fingerprint, persist: persist)
             // Persist as the last-applied state for THIS device.
             guard generation == selectionGeneration,
                   lightingRevision == lightingGeneration else { return }
             if persist { presetStore.recordColor(state.color) }
             deviceStates.record(lighting: state, for: fingerprint)
+            if state.frameBrightness == 0 {
+                wheelColour = .off
+            } else if state.effect == .spectrum || state.effect == .spectrumAlt {
+                wheelColour = .multicolour
+            } else {
+                let scale = Double(state.frameBrightness) / 100
+                let c = state.color.clamped()
+                wheelColour = WheelColour(RGBColor(red: Int((Double(c.red) * scale).rounded()),
+                                                   green: Int((Double(c.green) * scale).rounded()),
+                                                   blue: Int((Double(c.blue) * scale).rounded())))
+            }
             lightingMessage = persist ? "Lighting saved" : "Previewing lighting…"
             if persist {
-                if state.includeHasteProbe && state.effect == .staticColor {
-                    startKeepalive(color: wireColor)
+                if usesDirectMode(state) {
+                    startKeepalive(color: state.effectiveColor)
                 }
             } else {
                 // The view can close while this settles. Keep saving owned by
@@ -434,6 +458,21 @@ final class DeviceViewModel: ObservableObject {
         }
     }
 
+    private func usesDirectMode(_ state: DeviceLightingState) -> Bool {
+        state.includeHasteProbe && state.effect == .staticColor
+            && activeProfile?.capabilities.contains(.hasteDirect) == true
+            && activeProfile?.fingerprint.isPulsefireHasteWireless == false
+    }
+
+    private func writeLighting(_ state: DeviceLightingState, for fingerprint: DeviceFingerprint,
+                               persist: Bool) async throws {
+        let onboard = fingerprint.isPulsefireHasteWireless
+        try await deviceService.applyLighting(
+            target: state.target, effect: state.effect, color: onboard ? state.color : state.effectiveColor,
+            brightness: onboard ? state.frameBrightness : state.brightness, speed: state.speed,
+            includeHasteProbe: persist && usesDirectMode(state), persist: persist)
+    }
+
     /// Convenience overload kept for older callers and presets.
     func applyLighting(target: LEDTarget,
                        effect: LEDEffect,
@@ -451,17 +490,14 @@ final class DeviceViewModel: ObservableObject {
     }
 
     private func restoreDPIFlashIfNeeded() async throws {
-        guard let state = dpiFlashRestoreState else { return }
+        guard let state = dpiFlashRestoreState, let fingerprint = activeProfile?.fingerprint else { return }
         let revision = lightingGeneration
         dpiPreviewRestoreTask?.cancel()
         dpiPreviewRestoreTask = nil
-        try await deviceService.applyLighting(
-            target: state.target, effect: state.effect, color: state.effectiveColor,
-            brightness: state.brightness, speed: state.speed, includeHasteProbe: false, persist: false
-        )
+        try await writeLighting(state, for: fingerprint, persist: false)
         guard revision == lightingGeneration else { return }
         dpiFlashRestoreState = nil
-        if state.includeHasteProbe && state.effect == .staticColor {
+        if usesDirectMode(state) {
             startKeepalive(color: state.effectiveColor)
         }
     }
@@ -478,7 +514,8 @@ final class DeviceViewModel: ObservableObject {
         let generation = selectionGeneration
         dpiSelectionRevision &+= 1
         let revision = dpiSelectionRevision
-        let state = DeviceDPIState(levels: levels, activeProfile: activeProfile).normalized()
+        let state = DeviceDPIState(levels: levels, activeProfile: activeProfile)
+            .normalized(forHasteWireless: fingerprint.isPulsefireHasteWireless)
         do {
             try await restoreDPIFlashIfNeeded()
             guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
@@ -486,6 +523,7 @@ final class DeviceViewModel: ObservableObject {
                                                   activeProfile: state.activeProfile)
             guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
             deviceStates.record(dpi: state, for: fingerprint)
+            reportedDPI = state
             dpiMessage = "DPI settings saved · active level \(state.activeProfile)"
         } catch HIDError.notPermitted {
             guard generation == selectionGeneration else { return }
@@ -502,6 +540,7 @@ final class DeviceViewModel: ObservableObject {
 
     func applyDPI(profile: Int, dpi: Int) async {
         guard let fingerprint = activeProfile?.fingerprint else { return }
+        let dpi = DeviceDPIState.clampDPI(dpi, forHasteWireless: fingerprint.isPulsefireHasteWireless)
         let generation = selectionGeneration
         dpiSelectionRevision &+= 1
         let revision = dpiSelectionRevision
@@ -511,6 +550,7 @@ final class DeviceViewModel: ObservableObject {
             try await deviceService.applyDPI(profile: profile, dpi: dpi)
             guard generation == selectionGeneration, revision == dpiSelectionRevision else { return }
             deviceStates.record(activeProfile: profile, dpi: dpi, for: fingerprint)
+            reportedDPI = currentDeviceState.dpi
             dpiMessage = "DPI level \(profile) set to \(dpi)"
         } catch HIDError.notPermitted {
             guard generation == selectionGeneration else { return }
@@ -716,7 +756,12 @@ final class DeviceViewModel: ObservableObject {
         }
         guard generation == selectionGeneration, revision == dpiSelectionRevision else { return false }
         deviceStates.update(fingerprint) { $0.dpi.activeProfile = profile }
+        reportedDPI?.activeProfile = profile
         dpiMessage = "DPI level \(profile) selected"
+
+        // PF002 already has the indicator colour for this slot. Replacing its
+        // frame bank to flash a colour would destroy effects set by another app.
+        if fingerprint.isPulsefireHasteWireless { return true }
 
         // A pending user colour takes precedence over temporary visual feedback.
         guard lightingRevision == lightingGeneration, !lightingWriteInFlight,

@@ -25,6 +25,7 @@ final class ProfileRegistry {
         //   3. Open a PR — see PROFILES.md
         // -------------------------------------------------------------
         register(PulsefireHasteProfile())
+        register(PulsefireHaste2WirelessProfile())
         register(QuadCastProfile())
         register(DefaultHyperXProfile())
     }

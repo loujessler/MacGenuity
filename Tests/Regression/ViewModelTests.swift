@@ -10,10 +10,13 @@ private final class FakeDeviceService: DeviceService {
     var selections: [String?] = []
     var access: HIDAccessState = .granted
     var battery: BatteryState? = BatteryState(percent: 60, isCharging: false)
+    var dpi: DeviceDPIState?
+    var wheelColour: WheelColour?
     var probeError: HIDError?
     var probeCount = 0
     var permissionRequests = 0
     var lightingColors: [RGBColor] = []
+    var brightnessValues: [Int] = []
     var keepaliveCount = 0
     var lightingCommits: [Bool] = []
     var directModes: [Bool] = []
@@ -35,7 +38,7 @@ private final class FakeDeviceService: DeviceService {
     func probe() async throws -> DeviceSnapshot {
         probeCount += 1
         if let probeError { throw probeError }
-        return DeviceSnapshot(info: nil, battery: battery, error: nil)
+        return DeviceSnapshot(info: nil, battery: battery, error: nil, dpi: dpi, wheelColour: wheelColour)
     }
     func availableDevices() -> [DeviceFingerprint] { devices }
     func setActiveDevice(_ fingerprint: DeviceFingerprint?) async {
@@ -51,6 +54,7 @@ private final class FakeDeviceService: DeviceService {
                        brightness: Int, speed: Int, includeHasteProbe: Bool, persist: Bool) async throws {
         if let lightingError { throw lightingError }
         lightingColors.append(color)
+        brightnessValues.append(brightness)
         lightingCommits.append(persist)
         directModes.append(includeHasteProbe)
     }
@@ -117,8 +121,8 @@ enum ViewModelTests {
             quadCast2SStates: QuadCast2SStateStore(defaults: defaults), logger: logger)
         var permissionWindows = 0
         viewModel.showInputMonitoringHelp = { permissionWindows += 1 }
-        let input = DeviceFingerprint(vendorID: fingerprint.vendorID, productID: fingerprint.productID,
-            product: fingerprint.product, usagePage: 1, usage: 2, maxInput: 8, maxOutput: 0, maxFeature: 0)
+        let input = DeviceFingerprint(vendorID: fingerprint.vendorID, productID: 0x16E1,
+            product: "HyperX Pulsefire Dart", usagePage: 1, usage: 2, maxInput: 8, maxOutput: 0, maxFeature: 0)
         service.devices = [input]
         service.access = .unknown
         await viewModel.refresh()
@@ -134,8 +138,11 @@ enum ViewModelTests {
         precondition(viewModel.status == .disconnected && !viewModel.microphones.isEmpty)
         precondition(service.probeCount == 0, "Microphones and unrelated HID devices must not receive mouse probes")
         service.devices.append(fingerprint)
+        service.dpi = DeviceDPIState(levels: DeviceDPIState.default.levels, activeProfile: 3)
+        service.wheelColour = .multicolour
         await viewModel.refresh()
         precondition(viewModel.battery?.percent == 60)
+        precondition(viewModel.reportedDPI?.activeProfile == 3 && viewModel.wheelColour == .multicolour)
         precondition(viewModel.selectedDeviceKey == fingerprint.stableKey)
         precondition(service.permissionRequests == 1 && permissionWindows == 1)
         precondition(viewModel.status == .connected, "Vendor control must work if its own open succeeds")
@@ -204,6 +211,7 @@ enum ViewModelTests {
         service.devices = [soloCast, unrelated]
         await viewModel.refresh()
         precondition(viewModel.activeProfile == nil && viewModel.battery == nil && viewModel.selectedDeviceKey == nil)
+        precondition(viewModel.reportedDPI == nil && viewModel.wheelColour == nil)
         viewModel.start()
         service.devices.append(fingerprint)
         NotificationCenter.default.post(name: .hidDevicesChanged, object: nil)
@@ -284,12 +292,11 @@ enum ViewModelTests {
         precondition(service.lightingColors.count == writesAfterPreview + 1)
         precondition(service.lightingCommits.last == true,
                      "The settled Live selection must be committed without an Apply click")
+        let writesBeforeDPI = service.lightingCommits.count
         await viewModel.selectDPIProfile(2, previewColor: PresetColor.red.rgb)
         try await Task.sleep(nanoseconds: 1_650_000_000)
-        precondition(service.lightingColors.last == green.effectiveColor,
-                     "A DPI flash must restore the latest Live colour")
-        precondition(service.lightingCommits.last == false,
-                     "The transient DPI indicator must never be committed")
+        precondition(service.lightingCommits.count == writesBeforeDPI && viewModel.reportedDPI?.activeProfile == 2,
+                     "Selecting an onboard DPI level must preserve the device's existing frame bank")
 
         await viewModel.applyLighting(state: blue, persist: false)
         await viewModel.applyLighting(state: green, persist: false)
@@ -315,6 +322,13 @@ enum ViewModelTests {
         breathing.includeHasteProbe = true
         await viewModel.applyLighting(state: breathing)
         precondition(service.directModes.last == false, "A static direct frame must not replace an animated effect")
+        var spectrum = breathing
+        spectrum.effect = .spectrum
+        spectrum.brightness = 50
+        spectrum.opacity = 128
+        await viewModel.applyLighting(state: spectrum)
+        precondition(service.brightnessValues.last == 25 && service.directModes.last == false &&
+                     service.keepaliveCount == 0 && viewModel.wheelColour == .multicolour)
 
         await viewModel.applyLighting(state: blue, persist: false)
         await viewModel.setActiveDevice(fingerprint)

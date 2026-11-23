@@ -15,7 +15,7 @@ struct DeviceLightingState: Codable, Equatable {
     var target: LEDTarget
     var effect: LEDEffect
     var color: RGBColor
-    /// Hardware brightness byte (0–100). Maps to byte 10 of the `D2` packet.
+    /// User brightness (0–100). The selected profile encodes it for the device.
     var brightness: Int
     /// Software RGB attenuation (0–255). Multiplied into R/G/B before the
     /// packet is built — independent from `brightness` and applies to all
@@ -46,6 +46,11 @@ struct DeviceLightingState: Codable, Equatable {
             blue:  Int((Double(safe.blue)  * scale).rounded())
         )
     }
+
+    /// PF002 stores pre-scaled frames. Apply intensity to the entire effect, including the spectrum palette.
+    var frameBrightness: Int {
+        (min(100, max(0, brightness)) * min(255, max(0, opacity)) + 127) / 255
+    }
 }
 
 /// One DPI level entry — matches NGENUITY's "DPI Settings" rows: a value,
@@ -68,12 +73,18 @@ struct DeviceDPIState: Codable, Equatable {
     /// 1-based active profile index.
     var activeProfile: Int
 
-    func normalized() -> DeviceDPIState {
+    static func clampDPI(_ dpi: Int, forHasteWireless: Bool) -> Int {
+        let step = forHasteWireless ? 100 : 50
+        let minimum = forHasteWireless ? 200 : 50
+        return max(minimum, min(16_000, dpi)) / step * step
+    }
+
+    func normalized(forHasteWireless: Bool = false) -> DeviceDPIState {
         var safeLevels = Self.default.levels.map { fallback -> DPILevel in
             guard var level = levels.first(where: { $0.index == fallback.index }) else {
                 return fallback
             }
-            level.dpi = (max(50, min(16_000, level.dpi)) / 50) * 50
+            level.dpi = Self.clampDPI(level.dpi, forHasteWireless: forHasteWireless)
             level.color = level.color.clamped()
             return level
         }

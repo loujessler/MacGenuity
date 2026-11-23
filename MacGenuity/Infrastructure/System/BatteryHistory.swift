@@ -2,8 +2,7 @@
 //  BatteryHistory.swift
 //  MacGenuity
 //
-//  Persists a rolling battery-percent timeline. Used by the menu chart
-//  and by trend-based notifications.
+//  Persists a rolling battery-percent timeline. Displayed in device settings.
 //
 
 import Foundation

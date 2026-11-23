@@ -21,7 +21,10 @@ final class DefaultHyperXProfile: DeviceProfile {
         let lower = fp.lowercaseProduct
         // HP and Kingston vendor IDs also identify unrelated keyboards and
         // storage devices; they are not evidence of this mouse protocol.
-        guard lower.contains("pulsefire") else { return 0 }
+        guard lower.contains("pulsefire"), !fp.isPulsefireHasteWireless,
+              !(fp.vendorID == 0x03F0 && fp.productID == 0x0F98),
+              !lower.contains("haste 2"), !lower.contains("haste2"),
+              !lower.contains("pulsefire mat"), !lower.contains("mouse pad") else { return 0 }
 
         // Hard opt-out for non-mouse families. The HyperX VIDs are shared
         // across mice, headsets and microphones; a SoloCast on VID 0x03F0

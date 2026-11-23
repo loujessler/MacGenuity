@@ -24,6 +24,7 @@ enum PermissionError: Error, LocalizedError, Equatable {
 
 enum HIDError: Error, LocalizedError, Equatable {
     case deviceNotFound
+    case mouseAsleep
     case openFailed(Int32)
     case writeFailed(Int32)
     case readFailed(Int32)
@@ -37,6 +38,8 @@ enum HIDError: Error, LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .mouseAsleep:
+            return "The mouse is asleep or out of range. Move it to wake it."
         case .deviceNotFound:
             return "HyperX device not found. Check that the receiver is plugged in."
         case .openFailed(let r):

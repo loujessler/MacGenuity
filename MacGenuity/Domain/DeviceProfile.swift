@@ -47,6 +47,8 @@ struct ProfilePacket {
     enum ReceiveKind { case input, feature, none }
 
     let bytes: Data
+    let reportID: UInt8
+    let responsePrefix: [UInt8]?
     /// Where to send this packet. `nil` means "try output, fall back to feature".
     let send: SendKind?
     /// Where to expect a response. `.none` means no reply.
@@ -60,9 +62,13 @@ struct ProfilePacket {
          send: SendKind? = nil,
          receive: ReceiveKind = .none,
          retryWithReportID: Bool = false,
+         reportID: UInt8 = 0,
+         responsePrefix: [UInt8]? = nil,
          label: String)
     {
         self.bytes = bytes
+        self.reportID = reportID
+        self.responsePrefix = responsePrefix
         self.send = send
         self.receive = receive
         self.retryWithReportID = retryWithReportID
@@ -99,6 +105,10 @@ struct DeviceFingerprint: Equatable {
 
     // Vendor-defined interfaces carry device commands rather than standard input events.
     var isVendorControlInterface: Bool { (0xFF00...0xFFFF).contains(usagePage) }
+
+    var isPulsefireHasteWireless: Bool {
+        vendorID == 0x03F0 && (productID == 0x028E || productID == 0x048E)
+    }
 
     func matchesAttachment(_ candidate: DeviceFingerprint) -> Bool {
         if let registryEntryID { return registryEntryID == candidate.registryEntryID }
@@ -182,13 +192,24 @@ protocol DeviceProfile: AnyObject {
     /// accepts the writes but does not apply them on the next wake.
     /// Profiles that don't need a commit should return `nil`.
     func commitPacket() -> ProfilePacket?
+    func commitPacket(for setting: MouseSetting) -> ProfilePacket?
+    func selectDPIPacket(_ profile: Int) -> ProfilePacket
 }
+
+enum MouseSetting { case lighting, dpi, buttons }
 
 extension DeviceProfile {
     /// Default implementations let new profiles opt into a feature one at a time.
     func hasteDirectFrame(_ color: RGBColor) -> ProfilePacket? { nil }
     func hasteSetupPacket() -> ProfilePacket? { nil }
     func commitPacket() -> ProfilePacket? { nil }
+    func commitPacket(for setting: MouseSetting) -> ProfilePacket? { commitPacket() }
+    func selectDPIPacket(_ profile: Int) -> ProfilePacket {
+        var bytes = PacketUtils.empty(command: 0xD3)
+        bytes[3] = 1
+        bytes[4] = UInt8(max(1, min(5, profile)))
+        return ProfilePacket(bytes: bytes, send: .output, label: "selectDPIProfile")
+    }
     func buttonAssignmentPackets(_ assignment: ButtonAssignment) -> [ProfilePacket] { [] }
 
     /// Default batch implementation: combine per-level `dpiPackets` calls

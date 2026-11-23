@@ -4,6 +4,15 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-11-23
+
+- The redesigned menu shows battery, active DPI and wheel colour with red and brushed-metal detailing from the app icon. The original Haste Wireless reads its onboard settings when the menu opens. Battery history, trend, firmware and USB identifiers now live in Settings → Devices.
+- Fixed Static, Breathing, Spectrum and Trigger fade on the original Pulsefire Haste Wireless. Brightness and colour intensity now scale the onboard animation frames. The USB receiver acknowledges each update. Tested on a physical mouse by reading the frames back at multiple intensities.
+- Corrected Haste Wireless DPI steps, active-slot numbering and side-button mappings. Selecting DPI preserves the existing wheel animation. A sleeping mouse is identified through its receiver.
+- Lighting, DPI and Buttons open faster. Colour pickers and button-assignment options are built when needed.
+- Added battery monitoring for the Pulsefire Haste 2 Wireless receiver. The new profile has protocol tests and awaits physical verification. Added a device support table and native interface preview to the README.
+- This universal release supports macOS 13 and later. Versions 0.4.0 and later can install it through the signed Sparkle update feed.
+
 ## [0.4.2] — 2026-11-22
 
 - Pulsefire Haste Wireless uses the receiver's vendor-defined control interface. A denied Input Monitoring grant no longer blocks a receiver that macOS allows the app to open. Device discovery observes attachments without opening every mouse and keyboard interface.

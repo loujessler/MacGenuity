@@ -32,7 +32,10 @@ struct SettingsScene: View {
             AboutPane()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
+        .tint(DeviceTheme.accent)
+        .accentColor(DeviceTheme.accent)
         .frame(minWidth: 800, minHeight: 600)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -287,18 +290,21 @@ private struct HIDDeviceDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                header
-                Divider()
+                let active = viewModel.activeProfile.flatMap { $0.fingerprint.matchesAttachment(fingerprint) ? $0 : nil }
+                DeviceHeading(title: DeviceTheme.shortName(fingerprint.product.isEmpty ? "HyperX device" : fingerprint.product),
+                              context: active == nil ? "Device settings" : "Mouse settings") {
+                    if active != nil, let battery = viewModel.battery {
+                        Label("\(battery.percent)%", systemImage: battery.symbol)
+                            .font(.system(.headline).monospacedDigit()).foregroundStyle(.white)
+                            .accessibilityLabel("Battery \(battery.percent) percent" + (battery.isCharging ? ", charging" : ""))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                if let active = viewModel.activeProfile,
-                   active.fingerprint.matchesAttachment(fingerprint)
-                {
-                    if active.capabilities.contains(.battery), let battery = viewModel.battery {
-                        BatterySection(battery: battery)
-                    } else if active.capabilities.contains(.battery), let error = viewModel.lastError {
-                        Label("Battery unavailable", systemImage: "battery.0")
-                            .foregroundStyle(.secondary)
-                            .help(error)
+                if let active {
+                    if let error = viewModel.lastError {
+                        Label(error, systemImage: "info.circle")
+                            .font(.callout).foregroundStyle(.secondary)
                     }
                     if active.capabilities.contains(.lighting) {
                         CollapsibleSection(title: "Lighting", systemImage: "lightbulb") {
@@ -315,23 +321,47 @@ private struct HIDDeviceDetail: View {
                             ButtonsSection(viewModel: viewModel)
                         }
                     }
+                    if active.capabilities.contains(.battery) {
+                        CollapsibleSection(title: "Battery history", systemImage: "chart.xyaxis.line") {
+                            BatteryHistorySection(history: viewModel.history)
+                        }
+                    }
                 } else {
                     connectionStatus
+                }
+                CollapsibleSection(title: "Device details", systemImage: "info.circle") {
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                        if active != nil, let info = viewModel.info {
+                            if let firmware = info.pairedMouseFirmware {
+                                GridRow {
+                                    Text("Mouse firmware")
+                                    Text(firmware).monospacedDigit()
+                                }
+                            }
+                            GridRow {
+                                Text(fingerprint.isPulsefireHasteWireless && fingerprint.productID == 0x028E ? "Receiver firmware" : "Firmware")
+                                Text(info.firmware).monospacedDigit()
+                            }
+                        }
+                        GridRow {
+                            Text("USB vendor / product")
+                            Text("\(Hex.u16(fingerprint.vendorID)) / \(Hex.u16(fingerprint.productID))")
+                                .font(.system(.body, design: .monospaced))
+                        }
+                        if active != nil, let updated = viewModel.lastUpdate {
+                            GridRow {
+                                Text("Last battery reading")
+                                Text(updated, style: .time)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
                 }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-    }
-
-    private var header: some View {
-        Label(fingerprint.product.isEmpty ? "HyperX device" : fingerprint.product,
-              systemImage: deviceIcon)
-            .font(.system(size: 16, weight: .semibold))
-    }
-
-    private var deviceIcon: String {
-        ConfigurableDevice.hid(fingerprint).iconName
     }
 
     @ViewBuilder
@@ -354,35 +384,29 @@ private struct HIDDeviceDetail: View {
     }
 }
 
-// MARK: - Battery section
-
-private struct BatterySection: View {
-    let battery: BatteryState
+private struct BatteryHistorySection: View {
+    @ObservedObject var history: BatteryHistory
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Battery").font(.headline)
-            HStack(spacing: 8) {
-                Image(systemName: battery.isCharging ? "battery.100.bolt" : icon)
-                    .foregroundStyle(battery.isCharging ? .green : .primary)
-                Text("\(battery.percent)%")
-                    .font(.system(size: 13, weight: .medium))
-                    .monospacedDigit()
-                if battery.isCharging {
-                    Text("charging").font(.system(size: 11)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            if history.samples.count >= 2, let first = history.samples.first, let last = history.samples.last {
+                HStack {
+                    Text("Battery \(history.trend.label)").font(.callout)
+                    Spacer()
+                    Text("\(last.percent)%").monospacedDigit()
                 }
-                Spacer()
+                BatterySparkline(samples: history.samples, lineColor: DeviceTheme.accent,
+                                 fillColor: DeviceTheme.accent.opacity(0.12))
+                    .frame(height: 52)
+                HStack {
+                    Text(first.date, style: .time)
+                    Spacer()
+                    Text(last.date, style: .time)
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Collecting battery readings…").foregroundStyle(.secondary)
             }
-        }
-    }
-
-    private var icon: String {
-        switch battery.percent {
-        case 75...:    return "battery.100"
-        case 50..<75:  return "battery.75"
-        case 25..<50:  return "battery.50"
-        case 10..<25:  return "battery.25"
-        default:       return "battery.0"
         }
     }
 }
@@ -403,6 +427,8 @@ private struct LightingSection: View {
     /// Preview changes immediately, then save once the user stops editing.
     @State private var liveStream: Bool = true
     @State private var presetName: String = ""
+    @State private var editingColour = false
+    private var onboard: Bool { viewModel.activeProfile?.fingerprint.isPulsefireHasteWireless == true }
 
     @State private var streamTask: Task<Void, Never>?
     @State private var hydratedState: DeviceLightingState?
@@ -410,7 +436,7 @@ private struct LightingSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             modePicker
-            colorEditor
+            if !onboard || effect != .spectrum { colorEditor }
             slidersAndOptions
             applyRow
             presetsSection
@@ -436,12 +462,14 @@ private struct LightingSection: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
                 Picker("Effect", selection: $effect) {
-                    ForEach(LEDEffect.allCases) { Text($0.title).tag($0) }
+                    ForEach(onboard ? [.staticColor, .breathing, .spectrum, .triggerFade] : LEDEffect.allCases) {
+                        Text(onboard ? $0.name : $0.title).tag($0)
+                    }
                 }
                 .frame(maxWidth: 260)
                 Spacer()
             }
-            if !effect.isVerified {
+            if !onboard && !effect.isVerified {
                 Label("This effect is not verified against captured NGENUITY traffic — behaviour is firmware-specific.",
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
@@ -451,10 +479,19 @@ private struct LightingSection: View {
     }
 
     private var colorEditor: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Colour").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-            InteractiveColorPicker(color: $color, presetStore: presetStore)
-                .frame(maxWidth: 460)
+        HStack(spacing: 8) {
+            Text("Colour").frame(width: 90, alignment: .leading)
+            Button { editingColour.toggle() } label: {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 3).fill(swiftUIColor(color)).frame(width: 22, height: 16)
+                    Text("#\(color.hexString)").monospaced()
+                }
+            }
+            .accessibilityLabel("Edit lighting colour")
+            .accessibilityValue(color.hexString)
+            .popover(isPresented: $editingColour) {
+                InteractiveColorPicker(color: $color, presetStore: presetStore).padding().frame(width: 330)
+            }
         }
     }
 
@@ -494,10 +531,12 @@ private struct LightingSection: View {
 
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker("Lighting zone", selection: $target) {
-                        ForEach(LEDTarget.allCases) { Text($0.title).tag($0) }
+                    if !onboard {
+                        Picker("Lighting zone", selection: $target) {
+                            ForEach(LEDTarget.allCases) { Text($0.title).tag($0) }
+                        }
+                        .fixedSize()
                     }
-                    .fixedSize()
                     HStack(spacing: 8) {
                         Text("Colour intensity").frame(width: 100, alignment: .leading)
                         Slider(value: $opacity, in: 0...255, step: 1)
@@ -598,7 +637,8 @@ private struct LightingSection: View {
     }
 
     private func presetRow(_ preset: LightingPreset) -> some View {
-        HStack(spacing: 8) {
+        let effect = onboard && preset.effect == .spectrumAlt ? LEDEffect.spectrum : preset.effect
+        return HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 3)
                 .fill(swiftUIColor(preset.color))
                 .frame(width: 14, height: 14)
@@ -608,7 +648,7 @@ private struct LightingSection: View {
                 )
             VStack(alignment: .leading, spacing: 0) {
                 Text(preset.name).font(.system(size: 12, weight: .medium))
-                Text("\(preset.effect.title) · \(preset.color.hexString) · α=\(preset.opacity)")
+                Text("\(onboard ? effect.name : effect.title) · \(preset.color.hexString) · α=\(preset.opacity)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -660,14 +700,14 @@ private struct LightingSection: View {
 
     private func loadEditor(_ s: DeviceLightingState) {
         streamTask?.cancel()
-        hydratedState = s
         target = s.target
-        effect = s.effect
+        effect = onboard && s.effect == .spectrumAlt ? .spectrum : s.effect
         color = s.color
         brightness = Double(s.brightness)
         opacity = Double(s.opacity)
         speed = Double(s.speed)
-        includeHasteProbe = s.includeHasteProbe
+        includeHasteProbe = !onboard && s.includeHasteProbe
+        hydratedState = snapshotState()
     }
 
     private func scheduleLiveUpdate() {
@@ -695,6 +735,8 @@ private struct DPISection: View {
 
     @State private var levels: [DPILevel] = DeviceDPIState.default.levels
     @State private var activeProfile: Int = DeviceDPIState.default.activeProfile
+    @State private var editingColourIndex: Int?
+    private var onboard: Bool { viewModel.activeProfile?.fingerprint.isPulsefireHasteWireless == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -727,7 +769,7 @@ private struct DPISection: View {
         let isActive = level.index == activeProfile
         let dpiBinding = Binding<Double>(
             get: { Double(levels[index].dpi) },
-            set: { levels[index].dpi = stepDPI(Int($0.rounded())) }
+            set: { levels[index].dpi = DeviceDPIState.clampDPI(Int($0.rounded()), forHasteWireless: onboard) }
         )
         let enabledBinding = Binding<Bool>(
             get: { levels[index].enabled },
@@ -764,7 +806,7 @@ private struct DPISection: View {
                 .frame(width: 50, alignment: .leading)
                 .foregroundStyle(level.enabled ? .primary : .secondary)
 
-            Slider(value: dpiBinding, in: 50...16_000, step: 50)
+            Slider(value: dpiBinding, in: (onboard ? 200.0 : 50.0)...16_000, step: onboard ? 100 : 50)
                 .disabled(!level.enabled)
                 .accessibilityLabel("DPI level \(level.index) sensitivity")
                 .accessibilityValue("\(level.dpi) DPI")
@@ -795,21 +837,19 @@ private struct DPISection: View {
     }
 
     private func colorWell(for index: Int) -> some View {
-        let binding = Binding<Color>(
-            get: {
-                let c = levels[index].color
-                return Color(red: Double(c.red) / 255,
-                             green: Double(c.green) / 255,
-                             blue: Double(c.blue) / 255)
-            },
-            set: { newValue in
-                levels[index].color = rgb(from: newValue)
-            }
-        )
-        return ColorPicker("DPI level \(levels[index].index) indicator colour", selection: binding, supportsOpacity: false)
-            .labelsHidden()
-            .frame(width: 36, height: 22)
-            .help("Indicator colour for this DPI level")
+        let c = levels[index].color
+        return Button { editingColourIndex = index } label: {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(red: Double(c.red) / 255, green: Double(c.green) / 255, blue: Double(c.blue) / 255))
+                .frame(width: 22, height: 15)
+        }
+        .accessibilityLabel("DPI level \(levels[index].index) indicator colour")
+        .accessibilityValue(c.hexString)
+        .popover(isPresented: Binding(get: { editingColourIndex == index },
+                                      set: { if !$0 { editingColourIndex = nil } })) {
+            InteractiveColorPicker(color: $levels[index].color, presetStore: viewModel.presetStore)
+                .padding().frame(width: 330)
+        }
     }
 
     private var footer: some View {
@@ -837,24 +877,11 @@ private struct DPISection: View {
     }
 
     private func hydrate() {
-        let s = viewModel.currentDeviceState.dpi
+        let s = (viewModel.reportedDPI ?? viewModel.currentDeviceState.dpi).normalized(forHasteWireless: onboard)
         levels = s.levels
         activeProfile = s.activeProfile
     }
 
-    private func stepDPI(_ raw: Int) -> Int {
-        let clamped = min(16_000, max(50, raw))
-        return (clamped / 50) * 50
-    }
-
-    private func rgb(from color: Color) -> RGBColor {
-        let ns = NSColor(color).usingColorSpace(.sRGB) ?? NSColor.black
-        return RGBColor(
-            red:   Int(round(ns.redComponent   * 255)),
-            green: Int(round(ns.greenComponent * 255)),
-            blue:  Int(round(ns.blueComponent  * 255))
-        )
-    }
 }
 
 // MARK: - Collapsible section wrapper
@@ -884,7 +911,7 @@ private struct CollapsibleSection<Content: View>: View {
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: systemImage)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(DeviceTheme.accent)
                         .frame(width: 20)
                     Text(title)
                         .font(.system(size: 13, weight: .semibold))
@@ -958,24 +985,27 @@ private struct ButtonsSection: View {
                 .font(.system(size: 12, weight: .medium))
                 .frame(width: 110, alignment: .leading)
 
-            Picker("Action for \(button.title)", selection: bindingFor(button: button)) {
-                Section("Mouse") {
-                    ForEach(ButtonAction.MouseFunctionCode.allCases) { code in
-                        Text(code.title).tag(ButtonAction.mouseButton(code))
+            Menu {
+                Picker("Action for \(button.title)", selection: bindingFor(button: button)) {
+                    Section("Mouse") {
+                        ForEach(ButtonAction.MouseFunctionCode.allCases) { code in
+                            Text(code.title).tag(ButtonAction.mouseButton(code))
+                        }
                     }
-                }
-                Section("DPI") {
                     Text("DPI cycle").tag(ButtonAction.dpiToggle)
-                }
-                Section("Media") {
-                    ForEach(ButtonAction.MediaFunctionCode.allCases) { code in
-                        Text("Media: \(code.title)").tag(ButtonAction.media(code))
+                    Section("Media") {
+                        ForEach(ButtonAction.MediaFunctionCode.allCases) { code in
+                            Text(code.title).tag(ButtonAction.media(code))
+                        }
                     }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Text(current.title).frame(maxWidth: .infinity, alignment: .leading)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
             .frame(maxWidth: 220)
+            .accessibilityLabel("Action for \(button.title)")
+            .accessibilityValue(current.title)
 
             Spacer(minLength: 0)
 
@@ -1067,7 +1097,6 @@ private struct MicrophoneDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                Divider()
                 controlsSection
                 propertiesSection
                 castHardwareSection
@@ -1078,31 +1107,11 @@ private struct MicrophoneDetail: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "mic")
-                .font(.system(size: 22))
-                .foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(microphone.displayName)
-                        .font(.system(size: 16, weight: .semibold))
-                    if microphone.isDefaultInput {
-                        Text("DEFAULT")
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                }
-                if !microphone.manufacturer.isEmpty {
-                    Text(microphone.manufacturer)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
+        DeviceHeading(title: DeviceTheme.shortName(microphone.displayName),
+                      context: microphone.isDefaultInput ? "Microphone · Default input" : "Microphone settings") {
+            Image(systemName: "mic").foregroundStyle(.white).accessibilityHidden(true)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var controlsSection: some View {
@@ -1236,9 +1245,8 @@ private struct AboutPane: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "computermouse")
-                .font(.system(size: 48))
-                .foregroundColor(.accentColor)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable().frame(width: 64, height: 64).accessibilityHidden(true)
             Text("MacGenuity")
                 .font(.title2.weight(.semibold))
             if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {

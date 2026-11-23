@@ -1,319 +1,213 @@
-//
-//  MenuContent.swift
-//  MacGenuity
-//
-//  Compact dropdown shown when the user clicks the menu bar icon.
-//  Read-only status + small actionable buttons. All control editors
-//  (lighting, DPI, presets) live in the Settings window — keeping the
-//  dropdown narrow and uncluttered.
-//
-
-import SwiftUI
 import AppKit
+import SwiftUI
 
 struct MenuContent: View {
     @ObservedObject var viewModel: DeviceViewModel
     @ObservedObject var settings: AppSettings
-    @ObservedObject var presetStore: PresetStore
-    @ObservedObject var history: BatteryHistory
 
     @EnvironmentObject private var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            statusSection
-
-            if viewModel.status == .permissionRequired {
-                divider
-                InputMonitoringHelp()
-                    .font(.system(size: 11))
-                    .padding(.horizontal, 14)
+            DeviceHeading(title: heading, context: "MacGenuity") {
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 28, height: 28)
+                        .foregroundStyle(.white)
+                        .background(Circle().fill(.white.opacity(0.10)))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("r")
+                .accessibilityLabel("Refresh devices")
+                .help("Refresh devices (⌘R)")
             }
 
-            if hasMouseDetails {
-                divider; mouseSection
-            }
-
-            if viewModel.battery != nil, history.samples.count >= 2 {
-                divider; batterySection
+            if viewModel.status == .connected, let profile = viewModel.activeProfile {
+                if viewModel.mouseAsleep {
+                    statusLine("Mouse asleep · move it to wake", icon: "moon")
+                } else {
+                    metrics(profile.capabilities)
+                }
+            } else {
+                switch viewModel.status {
+                case .permissionRequired:
+                    InputMonitoringHelp().padding(16)
+                case .error(let message):
+                    statusLine(message, icon: "exclamationmark.triangle")
+                case .disconnected where viewModel.microphones.isEmpty:
+                    statusLine("Connect a HyperX device", icon: "cable.connector")
+                default:
+                    EmptyView()
+                }
             }
 
             if !viewModel.microphones.isEmpty {
-                divider; microphoneSection
+                if viewModel.status == .connected { Divider().padding(.horizontal, 16) }
+                VStack(spacing: 0) {
+                    ForEach(viewModel.microphones) { mic in microphoneRow(mic) }
+                }
+                .padding(.vertical, 4)
             }
 
-            divider; actionsSection
+            Divider()
+            HStack(spacing: 12) {
+                Button {
+                    showWindow("settings")
+                } label: {
+                    Label("Settings…", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(",")
+                Spacer()
+                Menu {
+                    Button("Check for Updates…", action: updater.check)
+                        .disabled(!updater.canCheck)
+                        .keyboardShortcut("u")
+                    Button("Diagnostics…") { showWindow("diagnostics") }
+                        .keyboardShortcut("d")
+                    Divider()
+                    Button("Quit MacGenuity") { NSApp.terminate(nil) }
+                        .keyboardShortcut("q")
+                } label: {
+                    Image(systemName: "ellipsis.circle").frame(width: 28, height: 24)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("More actions")
+                .help("More actions")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
-        .padding(.vertical, 6)
-        .frame(width: 280)
+        .frame(width: 352)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .tint(DeviceTheme.accent)
+        .task { await viewModel.refresh() }
     }
 
-    // MARK: - Sections
-
-    private var divider: some View {
-        Divider().padding(.vertical, 4)
-    }
-
-    private var hasMouseDetails: Bool {
-        viewModel.info != nil || viewModel.battery != nil || partialReadError != nil
-    }
-
-    private var partialReadError: String? {
-        viewModel.status == .connected ? viewModel.lastError : nil
-    }
-
-    @ViewBuilder
-    private var statusSection: some View {
+    private var heading: String {
         switch viewModel.status {
-        case .unknown:
-            row(icon: "questionmark.circle", label: "Checking…")
         case .connected:
-            HStack(spacing: 8) {
-                Image(systemName: "computermouse").foregroundStyle(.secondary)
-                let product = viewModel.activeProfile?.fingerprint.product ?? ""
-                Text(viewModel.info?.displayName ?? (product.isEmpty ? "Mouse connected" : product))
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(2)
-                Spacer(minLength: 4)
-                if let battery = viewModel.battery {
-                    Label("\(battery.percent)%", systemImage: batteryIcon(battery))
-                        .foregroundStyle(batteryColor(battery))
-                        .monospacedDigit()
-                        .fixedSize()
-                        .accessibilityLabel(batteryDescription(battery))
-                        .help(batteryDescription(battery))
+            let name = viewModel.info?.displayName ?? viewModel.activeProfile?.fingerprint.product ?? ""
+            return name.isEmpty ? "Mouse connected" : DeviceTheme.shortName(name)
+        case .unknown: return "Checking devices…"
+        case .permissionRequired: return "Input Monitoring required"
+        case .error: return "Device unavailable"
+        case .disconnected: return viewModel.microphones.isEmpty ? "No devices connected" : "Microphone controls"
+        }
+    }
+
+    private func metrics(_ capabilities: DeviceCapabilities) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            if capabilities.contains(.battery) {
+                let battery = viewModel.battery
+                let low = battery.map { !$0.isCharging && settings.lowBatteryWarningEnabled && $0.percent <= settings.lowBatteryThreshold } ?? false
+                metric("Battery", icon: battery?.symbol ?? "battery.0") {
+                    HStack(spacing: 4) {
+                        Text(battery.map { "\($0.percent)%" } ?? "—").monospacedDigit()
+                        if low {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .font(.caption).foregroundStyle(DeviceTheme.accent)
+                        }
+                    }
                 }
+                .accessibilityValue(battery.map { "\($0.percent) percent" + ($0.isCharging ? ", charging" : low ? ", low" : "") } ?? "Unavailable")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 4)
-        case .disconnected:
-            if viewModel.microphones.isEmpty {
-                row(icon: "powerplug", label: "No supported devices connected", muted: true)
-            } else {
-                row(icon: "mic", label: "Microphone connected")
+            if capabilities.contains(.dpiProfiles) {
+                let state = viewModel.reportedDPI
+                let dpi = state?.levels.first { $0.index == state?.activeProfile }?.dpi
+                if capabilities.contains(.battery) { metricDivider }
+                metric("DPI", icon: "scope") { Text(dpi.map(String.init) ?? "—").monospacedDigit() }
+                    .accessibilityValue(dpi.map(String.init) ?? "Unavailable")
             }
-        case .permissionRequired:
-            row(icon: "lock.shield", label: "Input Monitoring required", muted: true)
-        case .error(let msg):
-            row(icon: "exclamationmark.triangle", label: msg, muted: true)
+            if capabilities.contains(.lighting) {
+                if !capabilities.isDisjoint(with: [.battery, .dpiProfiles]) { metricDivider }
+                metric("Lighting", icon: "lightbulb") { colourValue }
+                    .accessibilityValue(colourText)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 16)
+    }
+
+    private var metricDivider: some View {
+        Divider().frame(height: 39).accessibilityHidden(true)
+    }
+
+    private func metric<Value: View>(_ title: String, icon: String, @ViewBuilder value: () -> Value) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(DeviceTheme.caption)
+            value().font(.system(size: 20, weight: .semibold)).frame(minHeight: 24)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+    }
+
+    private var colourText: String {
+        switch viewModel.wheelColour {
+        case .single(let rgb): return "#" + rgb.hexString
+        case .multicolour: return "Multicolour"
+        case .off: return "Off"
+        case nil: return "Unavailable"
         }
     }
 
-    @ViewBuilder
-    private var mouseSection: some View {
-        if let battery = viewModel.battery {
-            if shouldShowLowBatteryWarning(battery) {
-                detailRow(label: "Warning", value: "Low battery")
+    @ViewBuilder private var colourValue: some View {
+        switch viewModel.wheelColour {
+        case .single(let rgb):
+            HStack(spacing: 5) {
+                Circle().fill(Color(red: Double(rgb.red) / 255, green: Double(rgb.green) / 255, blue: Double(rgb.blue) / 255))
+                    .overlay(Circle().strokeBorder(.primary.opacity(0.35), lineWidth: 1))
+                    .frame(width: 12, height: 12)
+                Text(colourText).font(.system(size: 13, weight: .medium, design: .monospaced))
             }
-            let trend = history.trend
-            if !trend.label.isEmpty {
-                detailRow(label: "Trend", value: trend.label)
+        case .multicolour:
+            HStack(spacing: 5) {
+                Circle().fill(AngularGradient(colors: [.red, .yellow, .green, .blue, .purple, .red], center: .center))
+                    .frame(width: 12, height: 12)
+                Text(colourText).font(.system(size: 12, weight: .semibold))
             }
-        }
-        if let info = viewModel.info {
-            detailRow(label: "Firmware", value: info.firmware)
-            detailRow(label: "VID/PID", value: "\(Hex.u16(info.vendorID)) / \(Hex.u16(info.productID))")
-        }
-        if let updated = viewModel.lastUpdate {
-            TimelineView(.periodic(from: updated, by: 30)) { context in
-                detailRow(label: "Updated", value: relativeTime(updated, now: context.date))
-            }
-        }
-        if let partialReadError {
-            detailRow(label: "Read error", value: partialReadError)
+        case .off: Text("Off")
+        case nil: Text("—")
         }
     }
 
-    private var batterySection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Battery history")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-            BatterySparkline(samples: history.samples)
-                .frame(height: 40)
-                .padding(.horizontal, 14)
-        }
+    private func statusLine(_ text: String, icon: String) -> some View {
+        Label(text, systemImage: icon).font(.callout)
+            .foregroundStyle(.secondary).padding(16)
     }
 
-    private var microphoneSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Microphones")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 2)
-            ForEach(viewModel.microphones) { mic in
-                microphoneRow(mic)
-            }
-        }
-    }
-
-    /// Quick mute/unmute row. Tap toggles via CoreAudio, the property
-    /// listener pushes the new state back, and SwiftUI re-renders the
-    /// row — all without closing the menu (the `.window` MenuBarExtra
-    /// style keeps the panel open on button taps).
     private func microphoneRow(_ mic: MicrophoneInfo) -> some View {
-        let muted = mic.isMuted == true
-        return HStack(spacing: 8) {
-            Image(systemName: muted ? "mic.slash.fill" : "mic.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(muted ? Color.red : Color.primary)
+        HStack(spacing: 9) {
+            Image(systemName: mic.isMuted == true ? "mic.slash" : "mic")
+                .foregroundStyle(mic.isMuted == true ? DeviceTheme.accent : .secondary)
                 .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(mic.displayName)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                let details = [mic.isMuted.map { $0 ? "Muted" : "Live" },
-                               mic.isDefaultInput ? "Default input" : nil].compactMap { $0 }
-                if !details.isEmpty {
-                    Text(details.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 8)
-
-            if mic.isMuted != nil {
-                // The toggle represents "microphone is live" — ON means
-                // the mic is picking up sound, OFF means muted. This is
-                // the inverse of CoreAudio's `kAudioDevicePropertyMute`,
-                // so the binding flips the value on the way in/out.
+                .accessibilityHidden(true)
+            Text(DeviceTheme.shortName(mic.displayName)).font(.callout.weight(.medium)).lineLimit(2)
+            Spacer(minLength: 4)
+            Text(mic.isMuted.map { $0 ? "Muted" : "Live" } ?? "Hardware mute")
+                .font(.caption).foregroundStyle(DeviceTheme.caption)
+            if let muted = mic.isMuted, mic.canSetMute {
                 Toggle("\(mic.displayName) live input", isOn: Binding(
                     get: { !muted },
-                    set: { isLive in
-                        Task { await viewModel.setMicrophoneMute(!isLive, for: mic) }
-                    }
+                    set: { live in Task { await viewModel.setMicrophoneMute(!live, for: mic) } }
                 ))
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .disabled(!mic.canSetMute)
-                .help(muted ? "Switch on to unmute" : "Switch off to mute")
-            } else {
-                // Some HyperX mics route mute exclusively through the
-                // on-device tap pad and don't expose a settable CoreAudio
-                // property. Show a hint instead of a non-functional toggle.
-                Text("hardware only")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                .help(muted ? "Unmute microphone" : "Mute microphone")
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 16).padding(.vertical, 7)
     }
 
-    private var actionsSection: some View {
-        VStack(spacing: 0) {
-            menuButton(label: "Refresh", systemImage: "arrow.clockwise", shortcut: "R") {
-                Task { await viewModel.refresh() }
-            }
-            menuButton(label: "Settings…", systemImage: "gearshape", shortcut: ",") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
-            }
-            menuButton(label: "Check for Updates…", systemImage: "arrow.down.circle", shortcut: "U") {
-                updater.check()
-            }
-            .disabled(!updater.canCheck)
-            menuButton(label: "Diagnostics…", systemImage: "stethoscope", shortcut: "D") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "diagnostics")
-            }
-            menuButton(label: "Quit", systemImage: "power", shortcut: "Q") {
-                NSApplication.shared.terminate(nil)
-            }
-        }
-    }
-
-    // MARK: - Row builders
-
-    private func row(icon: String, label: String, muted: Bool = false) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(muted ? .secondary : .primary)
-                .frame(width: 18)
-            Text(label)
-                .font(.system(size: 13))
-                .foregroundStyle(muted ? .secondary : .primary)
-                .lineLimit(2)
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-    }
-
-    private func detailRow(label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .frame(width: 64, alignment: .leading)
-            Text(value)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 2)
-    }
-
-    private func menuButton(label: String, systemImage: String,
-                            shortcut: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Image(systemName: systemImage).frame(width: 16)
-                Text(label).font(.system(size: 13))
-                Spacer()
-                Text("⌘\(shortcut)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut(KeyEquivalent(Character(shortcut.lowercased())), modifiers: .command)
-    }
-
-    // MARK: - Helpers
-
-    private func batteryIcon(_ b: BatteryState) -> String {
-        if b.isCharging { return "battery.100.bolt" }
-        switch b.percent {
-        case 75...:    return "battery.100"
-        case 50..<75:  return "battery.75"
-        case 25..<50:  return "battery.50"
-        case 10..<25:  return "battery.25"
-        default:       return "battery.0"
-        }
-    }
-
-    private func batteryColor(_ b: BatteryState) -> Color {
-        if b.isCharging { return .green }
-        switch b.percent {
-        case ..<15: return .red
-        case ..<30: return .orange
-        default:    return .primary
-        }
-    }
-
-    private func batteryDescription(_ b: BatteryState) -> String {
-        b.isCharging ? "\(b.percent)% charging" : "\(b.percent)%"
-    }
-
-    private func shouldShowLowBatteryWarning(_ b: BatteryState) -> Bool {
-        settings.lowBatteryWarningEnabled && !b.isCharging && b.percent <= settings.lowBatteryThreshold
-    }
-
-    private func relativeTime(_ date: Date, now: Date) -> String {
-        if now.timeIntervalSince(date) < 5 { return "Just now" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: now)
+    private func showWindow(_ id: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: id)
     }
 }

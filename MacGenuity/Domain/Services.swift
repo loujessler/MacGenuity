@@ -11,6 +11,8 @@ struct DeviceSnapshot {
     let info: MouseInfo?
     let battery: BatteryState?
     let error: HIDError?
+    var dpi: DeviceDPIState?
+    var wheelColour: WheelColour?
 }
 
 protocol DeviceService: AnyObject {
@@ -54,8 +56,7 @@ protocol DeviceService: AnyObject {
     func applyButtonAssignment(_ assignment: ButtonAssignment) async throws
 
     /// Apply a full set of button assignments at once. Sends each `0xD4`
-    /// packet then a single commit at the end — minimises the number of
-    /// `DE 03 00` round-trips.
+    /// packet then a single profile-specific commit at the end.
     func applyButtonAssignments(_ assignments: [ButtonAssignment]) async throws
 
     /// Snapshot of the currently resolved profile (if any). UI uses this to
