@@ -217,8 +217,7 @@ private struct DevicesPane: View {
             return String(format: "USB port 0x%08X", port)
         case .microphone(let mic):
             if mic.isDefaultInput { return "Default input" }
-            if let muted = mic.isMuted { return muted ? "Muted" : "Live" }
-            return nil
+            return mic.muteStatus
         }
     }
 
@@ -1121,33 +1120,15 @@ private struct MicrophoneDetail: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Audio controls").font(.headline)
 
-            // The toggle represents "microphone is live" — ON means the
-            // mic is picking up sound, OFF means muted. This mirrors the
-            // menu-bar tray toggle and inverts CoreAudio's `Mute` flag
-            // on the way in/out of the binding.
-            //
-            // The label width is fixed so the switch doesn't shift
-            // horizontally when the text flips between "Muted" (5 chars)
-            // and "Live" (4 chars) — the wider state defines the slot.
-            if let muted = microphone.isMuted {
-                Toggle(isOn: Binding(
-                    get: { !muted },
-                    set: { isLive in
-                        Task { await viewModel.setMicrophoneMute(!isLive, for: microphone) }
-                    }
-                )) {
-                    Label(muted ? "Muted" : "Live",
-                          systemImage: muted ? "mic.slash.fill" : "mic.fill")
-                        .foregroundStyle(muted ? Color.red : Color.primary)
-                        .frame(minWidth: 90, alignment: .leading)
-                }
-                .toggleStyle(.switch)
-                .disabled(!microphone.canSetMute)
-            } else {
-                Label("Mute state not exposed by CoreAudio",
-                      systemImage: "mic.badge.xmark")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+            MicrophoneMuteControls(microphone: microphone, viewModel: viewModel)
+            if microphone.needsSystemUnmute {
+                Text(microphone.hardwareMuted == false
+                     ? "The SoloCast is on. Apps such as Google Meet can still see the macOS mute."
+                     : "macOS reports this input as muted to apps such as Google Meet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if microphone.isSoloCast && microphone.hardwareMuted == nil {
+                Text("Use the touch sensor on top of the SoloCast to mute or unmute it.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             // Volume slider. `volumePercent` is `nil` on mics that route

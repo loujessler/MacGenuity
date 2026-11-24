@@ -185,22 +185,19 @@ struct MenuContent: View {
     }
 
     private func microphoneRow(_ mic: MicrophoneInfo) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: mic.isMuted == true ? "mic.slash" : "mic")
-                .foregroundStyle(mic.isMuted == true ? DeviceTheme.accent : .secondary)
-                .frame(width: 18)
-                .accessibilityHidden(true)
-            Text(DeviceTheme.shortName(mic.displayName)).font(.callout.weight(.medium)).lineLimit(2)
-            Spacer(minLength: 4)
-            Text(mic.isMuted.map { $0 ? "Muted" : "Live" } ?? "Hardware mute")
-                .font(.caption).foregroundStyle(DeviceTheme.caption)
-            if let muted = mic.isMuted, mic.canSetMute {
-                Toggle("\(mic.displayName) live input", isOn: Binding(
-                    get: { !muted },
-                    set: { live in Task { await viewModel.setMicrophoneMute(!live, for: mic) } }
-                ))
-                .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                .help(muted ? "Unmute microphone" : "Mute microphone")
+        let muted = mic.needsSystemUnmute || mic.controlMuteState == true
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 9) {
+                Image(systemName: muted ? "mic.slash" : "mic")
+                    .foregroundStyle(muted ? DeviceTheme.accent : .secondary)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+                Text(DeviceTheme.shortName(mic.displayName)).font(.callout.weight(.medium)).lineLimit(2)
+                Spacer(minLength: 4)
+                MicrophoneMuteControls(microphone: mic, viewModel: viewModel)
+            }
+            if let message = viewModel.microphoneMessages[mic.id] {
+                Text(message).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 7)

@@ -78,12 +78,11 @@ protocol DeviceService: AnyObject {
 protocol AudioService: AnyObject {
     func connectedMicrophones() -> [MicrophoneInfo]
 
-    /// Toggle the hardware/software mute flag for `deviceID`. Returns
-    /// `true` if CoreAudio accepted the write — `false` means the
-    /// device doesn't expose a settable mute (some HyperX mics route
-    /// mute through the on-device tap-to-mute and refuse remote control).
+    func soloCastHardwareMute(for uid: String) -> Bool?
+
+    /// Applies an explicit user action to this input. The caller reads back the result.
     @discardableResult
-    func setMicrophoneMute(_ muted: Bool, deviceID: UInt32) -> Bool
+    func applyMicrophoneMute(_ action: MicrophoneMuteAction, for microphone: MicrophoneInfo) -> Bool
 
     /// Set input-volume scalar in `[0, 1]`. Returns false if the device
     /// has no software volume (in which case the user has to use the

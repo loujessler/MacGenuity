@@ -31,7 +31,7 @@
 
 Public builds use an ad-hoc signature and ship without Apple notarization. Each release includes a <code>SHA256SUMS</code> file. Download it alongside the DMG and run <code>shasum -a 256 -c SHA256SUMS</code> in the download directory. If Gatekeeper blocks the verified app, use <strong>System Settings → Privacy &amp; Security → Open Anyway</strong> when macOS offers it.
 
-MacGenuity opens the Haste receiver's vendor-defined USB interface directly. If macOS requires Input Monitoring for a device, the app offers <strong>Open System Settings…</strong> and <strong>Relaunch</strong>. With an ad-hoc build, an update can require granting access again. A stale entry can be reset under <strong>Already enabled?</strong> in the permission window. Microphone controls use CoreAudio.
+MacGenuity opens the Haste receiver's vendor-defined USB interface directly. If macOS requires Input Monitoring for a device, the app offers <strong>Open System Settings…</strong> and <strong>Relaunch</strong>. With an ad-hoc build, an update can require granting access again. A stale entry can be reset under <strong>Already enabled?</strong> in the permission window. Microphone levels use CoreAudio.
 
 </details>
 
@@ -46,13 +46,15 @@ MacGenuity opens the Haste receiver's vendor-defined USB interface directly. If 
 
 Opening the menu refreshes the original Haste Wireless from the receiver. A physical DPI-button change is reflected on the next read. Single-colour effects have a swatch and hex value. A cycling palette shows **Multicolour**, and zero brightness shows **Off**.
 
+If Google Meet reports that your SoloCast is muted while people can hear you, look for **macOS muted** next to the microphone. Choose **Unmute in macOS** when you want that input available to calls. Opening MacGenuity or installing an update leaves the mute setting alone.
+
 ## Device support
 
 | Device | Available controls | Verification |
 | --- | --- | --- |
 | **Pulsefire Haste Wireless** (PF002) | Battery, wheel lighting, active DPI, five editable levels, button assignments and firmware | USB receiver `03F0:028E` tested on hardware. Cable `03F0:048E` uses the same control protocol. |
 | **Pulsefire Haste 2 Wireless** | Battery monitoring through receiver `03F0:0F98` | Numbered HID reports checked against two independent clients and covered by packet tests. Hardware confirmation is still open. |
-| **SoloCast** | CoreAudio mute, input level, sample rate and default-input status, as exposed by the device | Detected on hardware. Mute and level controls follow the CoreAudio write capabilities. |
+| **SoloCast** | Hardware mute switch on the supported USB revision, input level, sample rate and default-input status. Other revisions use the touch sensor. | On `03F0:078B` revision `4112`, the USB mute state was read directly while CoreAudio reported a different value. |
 | **QuadCast 2 S** | Per-LED colour, spatial effects, 108-LED painter, 32-frame animation editor and return to firmware animation | Captured USB descriptors, 12 × 9 lamp geometry and dedicated protocol and renderer tests. |
 | **Other Cast microphones** | CoreAudio properties and available audio controls | Audio features depend on the model. RGB control is specific to QuadCast 2 S. |
 | **Other Pulsefire mice** | Generic NGENUITY protocol for compatible mice | Support varies by firmware and model. The original Haste and Haste 2 each have a dedicated profile. |

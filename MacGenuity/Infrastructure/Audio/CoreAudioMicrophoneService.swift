@@ -8,12 +8,8 @@
 //  Push notifications:
 //    The service installs CoreAudio property listeners on the system
 //    device list AND on each tracked HyperX mic's `Mute` / `Volume`
-//    properties. Whenever any of those flip — including via the
-//    on-device tap-to-mute pad of a QuadCast / SoloCast — the service
-//    posts `Notification.Name.microphoneStateChanged` on the main
-//    queue. The ViewModel subscribes and triggers an immediate
-//    `refresh()` so the UI reflects hardware changes without waiting
-//    for the next 60-second poll tick.
+//    properties. Changes reported by the driver trigger an audio refresh.
+//    Supported SoloCast touch sensors are read separately over USB.
 //
 
 import CoreAudio
@@ -76,6 +72,7 @@ final class CoreAudioMicrophoneService: AudioService {
                 || haystack.contains("quadcast")
                 || haystack.contains("duocast") else { return nil }
 
+            let mute = inputMute(for: device)
             return MicrophoneInfo(
                 id: device,
                 name: name,
@@ -84,10 +81,11 @@ final class CoreAudioMicrophoneService: AudioService {
                 sampleRate: doubleProperty(kAudioDevicePropertyNominalSampleRate, for: device),
                 inputStreamCount: streamCount,
                 volumePercent: volumePercent(for: device),
-                isMuted: muteState(for: device),
+                isMuted: mute?.muted,
                 isDefaultInput: device == defaultInput,
-                canSetMute: isInputPropertySettable(kAudioDevicePropertyMute, for: device),
-                canSetVolume: isInputPropertySettable(kAudioDevicePropertyVolumeScalar, for: device)
+                canSetMute: mute.map { isSettable($0.address, for: device) } ?? false,
+                canSetVolume: isInputPropertySettable(kAudioDevicePropertyVolumeScalar, for: device),
+                hardwareMuted: soloCastHardwareMute(for: uid)
             )
         }
 
@@ -247,20 +245,39 @@ final class CoreAudioMicrophoneService: AudioService {
             var address = AudioObjectPropertyAddress(mSelector: selector,
                 mScope: kAudioDevicePropertyScopeInput,
                 mElement: AudioObjectPropertyElement(element))
-            var settable: DarwinBoolean = false
-            if AudioObjectHasProperty(device, &address),
-               AudioObjectIsPropertySettable(device, &address, &settable) == noErr,
-               settable.boolValue { return true }
+            if AudioObjectHasProperty(device, &address), isSettable(address, for: device) { return true }
         }
         return false
     }
 
+    private func isSettable(_ property: AudioObjectPropertyAddress, for device: AudioObjectID) -> Bool {
+        var address = property
+        var settable: DarwinBoolean = false
+        return AudioObjectIsPropertySettable(device, &address, &settable) == noErr && settable.boolValue
+    }
+
+    func soloCastHardwareMute(for uid: String) -> Bool? {
+        SoloCastMute.read(for: uid)
+    }
+
     @discardableResult
-    func setMicrophoneMute(_ muted: Bool, deviceID: UInt32) -> Bool {
-        let value: UInt32 = muted ? 1 : 0
-        let written = writeInputProperty(kAudioDevicePropertyMute,
-                                         value: value, for: deviceID)
-        logger.info(.audio, "setMicrophoneMute(\(muted)) device=\(deviceID) ok=\(written)")
+    func applyMicrophoneMute(_ action: MicrophoneMuteAction, for mic: MicrophoneInfo) -> Bool {
+        guard mic.allows(action), !mic.uid.isEmpty,
+              stringProperty(kAudioDevicePropertyDeviceUID, for: mic.id) == mic.uid else { return false }
+        let written: Bool
+        switch action {
+        case .soloCastHardware(let muted):
+            guard inputMute(for: mic.id)?.muted != true else { return false }
+            written = SoloCastMute.setMuted(muted, for: mic.uid)
+        case .system(let muted):
+            guard var current = inputMute(for: mic.id) else { return false }
+            guard current.muted != muted else { return true }
+            guard isSettable(current.address, for: mic.id) else { return false }
+            var value: UInt32 = muted ? 1 : 0
+            written = AudioObjectSetPropertyData(mic.id, &current.address, 0, nil,
+                                                 UInt32(MemoryLayout<UInt32>.size), &value) == noErr
+        }
+        logger.info(.audio, "applyMicrophoneMute(\(action)) device=\(mic.id) ok=\(written)")
         return written
     }
 
@@ -271,32 +288,6 @@ final class CoreAudioMicrophoneService: AudioService {
                                        value: clamped, for: deviceID)
         logger.info(.audio, "setMicrophoneVolume(\(clamped)) device=\(deviceID) ok=\(written)")
         return written
-    }
-
-    private func writeInputProperty(_ selector: AudioObjectPropertySelector,
-                                    value: UInt32,
-                                    for device: AudioObjectID) -> Bool
-    {
-        // Try both `Main` (modern) and element 1 (legacy first-channel)
-        // — same as the read path. CoreAudio rejects writes against the
-        // wrong element with `kAudioHardwareUnknownPropertyError`.
-        for element in [kAudioObjectPropertyElementMain, 1] {
-            var address = AudioObjectPropertyAddress(
-                mSelector: selector,
-                mScope: kAudioDevicePropertyScopeInput,
-                mElement: AudioObjectPropertyElement(element)
-            )
-            guard AudioObjectHasProperty(device, &address) else { continue }
-            var isSettable: DarwinBoolean = false
-            guard AudioObjectIsPropertySettable(device, &address, &isSettable) == noErr,
-                  isSettable.boolValue else { continue }
-            var local = value
-            let size = UInt32(MemoryLayout<UInt32>.size)
-            if AudioObjectSetPropertyData(device, &address, 0, nil, size, &local) == noErr {
-                return true
-            }
-        }
-        return false
     }
 
     private func writeInputScalar(_ selector: AudioObjectPropertySelector,
@@ -422,13 +413,6 @@ final class CoreAudioMicrophoneService: AudioService {
         return Int((max(0, min(1, v)) * 100).rounded())
     }
 
-    private func muteState(for device: AudioObjectID) -> Bool? {
-        guard let m = uintInputProperty(kAudioDevicePropertyMute, for: device) else {
-            return nil
-        }
-        return m != 0
-    }
-
     private func scalarInputProperty(_ selector: AudioObjectPropertySelector,
                                      for device: AudioObjectID) -> Float?
     {
@@ -449,12 +433,10 @@ final class CoreAudioMicrophoneService: AudioService {
         return nil
     }
 
-    private func uintInputProperty(_ selector: AudioObjectPropertySelector,
-                                   for device: AudioObjectID) -> UInt32?
-    {
+    private func inputMute(for device: AudioObjectID) -> (muted: Bool, address: AudioObjectPropertyAddress)? {
         for element in [kAudioObjectPropertyElementMain, 1] {
             var address = AudioObjectPropertyAddress(
-                mSelector: selector,
+                mSelector: kAudioDevicePropertyMute,
                 mScope: kAudioDevicePropertyScopeInput,
                 mElement: AudioObjectPropertyElement(element)
             )
@@ -463,7 +445,7 @@ final class CoreAudioMicrophoneService: AudioService {
             var value = UInt32(0)
             var size = UInt32(MemoryLayout<UInt32>.size)
             if AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr {
-                return value
+                return (value != 0, address)
             }
         }
         return nil

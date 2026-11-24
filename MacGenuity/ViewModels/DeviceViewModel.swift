@@ -103,10 +103,7 @@ final class DeviceViewModel: ObservableObject {
         self.logger = logger
         self.accessState = self.deviceService.currentAccessState()
 
-        // Push updates from CoreAudio: when the on-device tap-to-mute
-        // pad or any other app toggles the input device's mute / volume
-        // state, refresh immediately instead of waiting for the next
-        // poll tick (which can be 60 s away).
+        // Refresh audio state as soon as CoreAudio reports a change.
         microphoneObserver = NotificationCenter.default.addObserver(
             forName: .microphoneStateChanged,
             object: nil,
@@ -226,8 +223,12 @@ final class DeviceViewModel: ObservableObject {
 
     private func refreshMicrophones() {
         let connected = audioService.connectedMicrophones()
-        if microphones != connected { microphones = connected }
-        microphoneMessages = microphoneMessages.filter { id, _ in microphones.contains { $0.id == id } }
+        guard microphones != connected else { return }
+        microphoneMessages = microphoneMessages.filter { id, _ in
+            guard let previous = microphones.first(where: { $0.id == id }) else { return false }
+            return connected.contains(previous)
+        }
+        microphones = connected
     }
 
     private func refreshOnce() async {
@@ -564,14 +565,35 @@ final class DeviceViewModel: ObservableObject {
 
     // MARK: - Microphones
 
-    /// Toggle mute on a HyperX microphone via CoreAudio. Triggers a
-    /// refresh so the UI mirrors what actually happened on the device.
-    func setMicrophoneMute(_ muted: Bool, for mic: MicrophoneInfo) async {
-        let ok = audioService.setMicrophoneMute(muted, deviceID: mic.id)
-        microphoneMessages[mic.id] = ok
-            ? "Microphone \(muted ? "muted" : "unmuted")"
-            : "Mute not settable (use the on-device tap-to-mute)"
+    func applyMicrophoneMute(_ action: MicrophoneMuteAction, for mic: MicrophoneInfo) {
         refreshMicrophones()
+        guard let current = microphones.first(where: { $0.id == mic.id && $0.uid == mic.uid }),
+              current.allows(action) else { return }
+        let accepted = audioService.applyMicrophoneMute(action, for: current)
+        refreshMicrophones()
+        guard let updated = microphones.first(where: { $0.id == mic.id && $0.uid == mic.uid }) else { return }
+        switch action {
+        case .system(let muted):
+            microphoneMessages[mic.id] = accepted && updated.isMuted == muted
+                ? nil : "Couldn’t confirm the macOS mute change."
+        case .soloCastHardware(let muted):
+            microphoneMessages[mic.id] = accepted && updated.hardwareMuted == muted
+                ? nil : "Couldn’t confirm the mute change. Check the SoloCast."
+        }
+    }
+
+    func observeSoloCastMute(for mic: MicrophoneInfo) async {
+        guard mic.hardwareMuted != nil else { return }
+        while !Task.isCancelled {
+            guard let index = microphones.firstIndex(where: { $0.id == mic.id && $0.uid == mic.uid }) else { return }
+            let muted = audioService.soloCastHardwareMute(for: mic.uid)
+            if microphones[index].hardwareMuted != muted {
+                microphones[index].hardwareMuted = muted
+                microphoneMessages[mic.id] = nil
+            }
+            guard muted != nil else { return }
+            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+        }
     }
 
     /// Set software input volume on a HyperX microphone (0…100 %).

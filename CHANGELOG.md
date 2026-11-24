@@ -4,6 +4,11 @@ All notable changes to MacGenuity are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] — 2026-11-24
+
+- Fixed a SoloCast mute mismatch that could make Google Meet report a muted system input while the microphone was transmitting. On the HP SoloCast `03F0:078B` revision `4112`, the menu and Settings use the microphone’s USB mute control. Other SoloCast revisions use the touch sensor.
+- If macOS already reports the SoloCast muted, choose **Unmute in macOS** in the menu or device settings to clear that input’s system mute. MacGenuity reads the result back. Startup, polling and reconnecting leave mute unchanged.
+
 ## [1.0.3] — 2026-11-23
 
 - Removed the onboard keyboard macros that could pause pointer movement on the original Pulsefire Haste Wireless. Its native rear and front buttons send Mouse4 and Mouse5.

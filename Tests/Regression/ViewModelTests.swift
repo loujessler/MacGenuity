@@ -76,12 +76,29 @@ private final class FakeDeviceService: DeviceService {
 }
 
 private final class FakeAudioService: AudioService {
+    var muteWrites: [(id: UInt32, action: MicrophoneMuteAction)] = []
+    var acceptsMute = true
+    var appliesMute = true
+    var reportsSystemMute = true
     var microphones = [MicrophoneInfo(id: 7, name: "HyperX SoloCast", manufacturer: "HyperX",
         uid: "test-solocast", sampleRate: 96_000, inputStreamCount: 1,
         volumePercent: 75, isMuted: false, isDefaultInput: true,
         canSetMute: true, canSetVolume: true)]
     func connectedMicrophones() -> [MicrophoneInfo] { microphones }
-    func setMicrophoneMute(_ muted: Bool, deviceID: UInt32) -> Bool { true }
+    func soloCastHardwareMute(for uid: String) -> Bool? {
+        microphones.first { $0.uid == uid }?.hardwareMuted
+    }
+    func applyMicrophoneMute(_ action: MicrophoneMuteAction, for mic: MicrophoneInfo) -> Bool {
+        muteWrites.append((mic.id, action))
+        guard acceptsMute, let i = microphones.firstIndex(where: { $0.uid == mic.uid }) else { return false }
+        if appliesMute {
+            switch action {
+            case .system(let muted): microphones[i].isMuted = reportsSystemMute ? muted : nil
+            case .soloCastHardware(let muted): microphones[i].hardwareMuted = muted
+            }
+        }
+        return true
+    }
     func setMicrophoneVolume(_ scalar: Float, deviceID: UInt32) -> Bool { true }
 }
 
@@ -96,6 +113,83 @@ private final class FakeQuadCastService: QuadCast2SService {
 
 @MainActor
 enum ViewModelTests {
+    private static func testMicrophoneMute(_ model: DeviceViewModel, audio: FakeAudioService) async throws {
+        let original = audio.microphones
+        defer { audio.microphones = original }
+        let solo = original[0]
+        let other = MicrophoneInfo(id: 8, name: "HyperX QuadCast", manufacturer: "HyperX", uid: "other",
+            sampleRate: nil, inputStreamCount: 1, volumePercent: 50, isMuted: false, isDefaultInput: false,
+            canSetMute: true)
+        audio.microphones.append(other)
+        precondition(audio.muteWrites.isEmpty, "Discovery, startup and refresh must only read mute")
+        for systemMute in [false, nil] as [Bool?] {
+            audio.microphones[0].isMuted = systemMute
+            model.applyMicrophoneMute(.system(true), for: solo)
+            model.applyMicrophoneMute(.system(false), for: solo)
+            model.applyMicrophoneMute(.soloCastHardware(true), for: solo)
+            precondition(model.microphones[0].muteStatus == "Touch sensor" && audio.muteWrites.isEmpty)
+        }
+
+        audio.microphones[0].hardwareMuted = false
+        audio.microphones[0].isMuted = true
+        NotificationCenter.default.post(name: .microphoneStateChanged, object: nil)
+        try await waitUntil { model.microphones[0].needsSystemUnmute }
+        precondition(model.microphones[0].muteStatus == "macOS muted")
+        model.applyMicrophoneMute(.system(true), for: solo)
+        model.applyMicrophoneMute(.soloCastHardware(false), for: solo)
+        audio.microphones[0].canSetMute = false
+        model.applyMicrophoneMute(.system(false), for: solo)
+        precondition(audio.muteWrites.isEmpty, "A stale or read-only system mute must never be cleared implicitly")
+
+        audio.microphones[0].canSetMute = true
+        audio.acceptsMute = false
+        model.applyMicrophoneMute(.system(false), for: solo)
+        precondition(model.microphoneMessages[solo.id] != nil && model.microphones[0].isMuted == true)
+        audio.acceptsMute = true
+        audio.appliesMute = false
+        model.applyMicrophoneMute(.system(false), for: solo)
+        precondition(model.microphoneMessages[solo.id] != nil, "An accepted write alone cannot confirm an unmute")
+        audio.appliesMute = true
+        audio.reportsSystemMute = false
+        model.applyMicrophoneMute(.system(false), for: solo)
+        precondition(model.microphones[0].isMuted == nil && model.microphoneMessages[solo.id] != nil)
+        audio.microphones[0].isMuted = true
+        audio.reportsSystemMute = true
+        model.applyMicrophoneMute(.system(false), for: solo)
+        precondition(model.microphones[0].isMuted == false && model.microphones[0].muteStatus == "Mic on")
+        precondition(model.microphoneMessages[solo.id] == nil && audio.microphones[1] == other)
+        precondition(audio.muteWrites.allSatisfy { $0.id == solo.id && $0.action == .system(false) })
+
+        model.applyMicrophoneMute(.soloCastHardware(true), for: solo)
+        precondition(model.microphones[0].muteStatus == "Muted" && model.microphones[0].isMuted == false)
+        model.applyMicrophoneMute(.soloCastHardware(false), for: solo)
+        precondition(model.microphones[0].hardwareMuted == false && model.microphoneMessages[solo.id] == nil)
+        audio.appliesMute = false
+        model.applyMicrophoneMute(.soloCastHardware(true), for: solo)
+        precondition(model.microphoneMessages[solo.id] != nil)
+        audio.appliesMute = true
+        let visible = model.microphones[0]
+        let writesBeforeTap = audio.muteWrites.count
+        audio.microphones[0].hardwareMuted = true
+        let watcher = Task { await model.observeSoloCastMute(for: visible) }
+        try await waitUntil { model.microphones[0].hardwareMuted == true && model.microphoneMessages[solo.id] == nil }
+        watcher.cancel()
+        await watcher.value
+        precondition(model.microphones[0].isMuted == false && audio.muteWrites.count == writesBeforeTap)
+
+        model.applyMicrophoneMute(.system(true), for: other)
+        precondition(audio.muteWrites.last?.id == other.id && audio.microphones[1].isMuted == true)
+        let count = audio.muteWrites.count
+        audio.microphones.removeFirst()
+        model.applyMicrophoneMute(.system(false), for: solo)
+        precondition(audio.muteWrites.count == count, "A disconnected microphone cannot change another input")
+        precondition(SoloCastMute.locationID(for: "AppleUSBAudioEngine:HP, Inc:HyperX SoloCast:111000:1") == 0x111000)
+        for uid in ["test-solocast", "AppleUSBAudioEngine:HP, Inc:HyperX SoloCast:serial:1",
+                    "AppleUSBAudioEngine:HP, Inc:HyperX QuadCast:111000:1"] {
+            precondition(SoloCastMute.locationID(for: uid) == nil)
+        }
+    }
+
     private static func waitUntil(_ condition: () -> Bool) async throws {
         for _ in 0..<150 {
             if condition() { return }
@@ -227,7 +321,7 @@ enum ViewModelTests {
         try await waitUntil { viewModel.activeProfile != nil }
         precondition(viewModel.activeProfile?.fingerprint == fingerprint)
         let probes = service.probeCount
-        await viewModel.setMicrophoneMute(true, for: audio.microphones[0])
+        try await testMicrophoneMute(viewModel, audio: audio)
         await viewModel.setMicrophoneVolume(50, for: audio.microphones[0])
         precondition(service.probeCount == probes, "Audio changes must not poll HID")
         service.battery = nil

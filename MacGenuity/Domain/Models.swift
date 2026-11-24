@@ -47,6 +47,11 @@ enum WheelColour: Equatable {
     }
 }
 
+enum MicrophoneMuteAction: Equatable {
+    case system(Bool)
+    case soloCastHardware(Bool)
+}
+
 struct MicrophoneInfo: Identifiable, Equatable {
     let id: UInt32
     let name: String
@@ -55,17 +60,43 @@ struct MicrophoneInfo: Identifiable, Equatable {
     let sampleRate: Double?
     let inputStreamCount: Int
     let volumePercent: Int?
-    let isMuted: Bool?
+    var isMuted: Bool?  // System input mute reported by CoreAudio.
     let isDefaultInput: Bool
     var canSetMute: Bool = false
     var canSetVolume: Bool = false
+    var hardwareMuted: Bool? = nil
 
     var displayName: String {
         name.isEmpty ? "HyperX microphone" : name
     }
 
     var isSoloCast: Bool {
-        displayName.lowercased().contains("solocast")
+        name.localizedCaseInsensitiveContains("solocast") || uid.localizedCaseInsensitiveContains("solocast")
+    }
+
+    var needsSystemUnmute: Bool { isSoloCast && isMuted == true }
+
+    var controlMuteState: Bool? { isSoloCast ? hardwareMuted : isMuted }
+
+    var canToggleMute: Bool {
+        controlMuteState != nil && (isSoloCast ? !needsSystemUnmute : canSetMute)
+    }
+
+    var muteStatus: String? {
+        if needsSystemUnmute { return "macOS muted" }
+        guard let muted = controlMuteState else { return isSoloCast ? "Touch sensor" : nil }
+        return muted ? "Muted" : (isSoloCast ? "Mic on" : "Live")
+    }
+
+    func allows(_ action: MicrophoneMuteAction) -> Bool {
+        switch action {
+        case .soloCastHardware:
+            return isSoloCast && canToggleMute
+        case .system(let muted) where isSoloCast:
+            return !muted && needsSystemUnmute && canSetMute
+        case .system:
+            return canToggleMute
+        }
     }
 
     var isQuadCast2S: Bool {
